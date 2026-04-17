@@ -1,0 +1,23 @@
+# binary
+wert
+wert.exe
+
+# build output
+dist/
+
+# data file (has chat history and tasks, keep it local)
+wert-data.json
+*.json
+
+# go
+vendor/
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
