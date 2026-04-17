@@ -17,22 +17,21 @@ import (
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 var (
-	cPurple  = lipgloss.Color("#7C3AED")
-	cGreen   = lipgloss.Color("#10B981")
-	cYellow  = lipgloss.Color("#F59E0B")
-	cRed     = lipgloss.Color("#EF4444")
-	cBlue    = lipgloss.Color("#3B82F6")
-	cMuted   = lipgloss.Color("#6B7280")
-	cFg      = lipgloss.Color("#F9FAFB")
-	cBg      = lipgloss.Color("#111827")
-	cBorder  = lipgloss.Color("#374151")
-	cActive  = lipgloss.Color("#4B5563")
+	cRed     = lipgloss.Color("#E53935") // primary accent
+	cGreen   = lipgloss.Color("#43A047") // secondary accent
+	cRedDark = lipgloss.Color("#B71C1C") // header background
+	cRedDim  = lipgloss.Color("#EF9A9A") // soft red for member names
+	cGreenDim = lipgloss.Color("#A5D6A7") // soft green for self / done
+	cMuted   = lipgloss.Color("#757575")
+	cFg      = lipgloss.Color("#F5F5F5")
+	cBorder  = lipgloss.Color("#424242")
+	cActive  = lipgloss.Color("#616161")
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 var (
 	headerStyle = lipgloss.NewStyle().
-			Background(cPurple).
+			Background(cRedDark).
 			Foreground(cFg).
 			Bold(true).
 			Padding(0, 2)
@@ -63,7 +62,7 @@ var (
 
 	paneBoxActive = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(cPurple)
+			BorderForeground(cRed)
 
 	inputBox = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -74,20 +73,20 @@ var (
 			Foreground(cMuted).
 			Italic(true)
 
-	todoSt    = lipgloss.NewStyle().Foreground(cYellow).Bold(true)
-	wipSt     = lipgloss.NewStyle().Foreground(cBlue).Bold(true)
-	doneSt    = lipgloss.NewStyle().Foreground(cGreen).Bold(true)
-	blockedSt = lipgloss.NewStyle().Foreground(cRed).Bold(true)
+	todoSt    = lipgloss.NewStyle().Foreground(cRed).Bold(true)
+	wipSt     = lipgloss.NewStyle().Foreground(cGreen).Bold(true)
+	doneSt    = lipgloss.NewStyle().Foreground(cGreenDim).Bold(true)
+	blockedSt = lipgloss.NewStyle().Foreground(cRedDim).Bold(true)
 
-	adminNameSt  = lipgloss.NewStyle().Foreground(cYellow).Bold(true)
+	adminNameSt  = lipgloss.NewStyle().Foreground(cRed).Bold(true)
 	selfNameSt   = lipgloss.NewStyle().Foreground(cGreen).Bold(true)
-	memberNameSt = lipgloss.NewStyle().Foreground(cPurple).Bold(true)
+	memberNameSt = lipgloss.NewStyle().Foreground(cRedDim).Bold(true)
 	timeSt       = lipgloss.NewStyle().Foreground(cMuted)
 	msgTextSt    = lipgloss.NewStyle().Foreground(cFg)
 
-	highPriSt = lipgloss.NewStyle().Foreground(cRed)
-	medPriSt  = lipgloss.NewStyle().Foreground(cYellow)
-	lowPriSt  = lipgloss.NewStyle().Foreground(cGreen)
+	highPriSt  = lipgloss.NewStyle().Foreground(cRed)
+	medPriSt   = lipgloss.NewStyle().Foreground(cGreen)
+	lowPriSt   = lipgloss.NewStyle().Foreground(cMuted)
 )
 
 // ── Tea messages ──────────────────────────────────────────────────────────────
@@ -401,7 +400,7 @@ func (m Model) renderTasks() string {
 
 		meta := fmt.Sprintf("     %s  assignee:%s  by:%s",
 			priStr,
-			lipgloss.NewStyle().Foreground(cBlue).Render(t.Assignee),
+			lipgloss.NewStyle().Foreground(cGreen).Render(t.Assignee),
 			lipgloss.NewStyle().Foreground(cMuted).Render(t.UpdatedBy),
 		)
 		sb.WriteString(meta + "\n")
@@ -424,7 +423,7 @@ func (m Model) renderChat() string {
 		case msg.From == m.username:
 			nameSt = selfNameSt
 		case msg.From == "mcp":
-			nameSt = lipgloss.NewStyle().Foreground(cBlue).Bold(true)
+			nameSt = lipgloss.NewStyle().Foreground(cGreen).Bold(true)
 		default:
 			// check if admin
 			isAdmin := false
