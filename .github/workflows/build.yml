@@ -1,10 +1,15 @@
-name: Build
+name: Release
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag (e.g. v1.2.3)"
+        required: false
+        default: "dev"
 
 permissions:
   contents: write
@@ -44,6 +49,18 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.tag }}" ]; then
+            echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build
         env:
@@ -52,7 +69,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist
-          go build -ldflags="-s -w" -o dist/wert-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} .
+          go build \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -o dist/wert-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -73,8 +92,33 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > checksums.txt
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/*
           generate_release_notes: true
+          body: |
+            ## Installation
+
+            Download the binary for your platform, make it executable, and move it to your PATH:
+
+            ```bash
+            # macOS (Apple Silicon)
+            curl -Lo wert https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/wert-darwin-arm64
+            chmod +x wert && mv wert /usr/local/bin/wert
+
+            # macOS (Intel)
+            curl -Lo wert https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/wert-darwin-amd64
+            chmod +x wert && mv wert /usr/local/bin/wert
+
+            # Linux (amd64)
+            curl -Lo wert https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/wert-linux-amd64
+            chmod +x wert && mv wert /usr/local/bin/wert
+            ```
+
+            Verify checksum with `checksums.txt`.

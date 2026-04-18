@@ -133,8 +133,8 @@ var taskFilterLabels = []string{"All", "Todo", "In Progress", "Done", "Blocked"}
 
 // ── GitHub sub-tabs ───────────────────────────────────────────────────────────
 
-var ghTabs = []string{"overview", "prs", "issues"}
-var ghTabLabels = []string{"Overview", "Pull Requests", "Issues"}
+var ghTabs = []string{"overview", "repos", "prs", "issues"}
+var ghTabLabels = []string{"Overview", "Repos", "Pull Requests", "Issues"}
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -434,6 +434,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var inputCmd tea.Cmd
 				m.wsInput, inputCmd = m.wsInput.Update(msg)
 				return m, inputCmd
+			}
+			// number keys switch sub-tabs when input is empty
+			if m.input.Value() == "" && !m.cmdlineActive {
+				if m.screen == scrTasks {
+					switch msg.String() {
+					case "1":
+						m.taskFilter = 0; m.refreshContent(); return m, nil
+					case "2":
+						m.taskFilter = 1; m.refreshContent(); return m, nil
+					case "3":
+						m.taskFilter = 2; m.refreshContent(); return m, nil
+					case "4":
+						m.taskFilter = 3; m.refreshContent(); return m, nil
+					case "5":
+						m.taskFilter = 4; m.refreshContent(); return m, nil
+					}
+				}
+				if m.screen == scrGitHub {
+					switch msg.String() {
+					case "1":
+						m.ghTab = 0; m.refreshContent(); return m, nil
+					case "2":
+						m.ghTab = 1; m.refreshContent(); return m, nil
+					case "3":
+						m.ghTab = 2; m.refreshContent(); return m, nil
+					case "4":
+						m.ghTab = 3; m.refreshContent(); return m, nil
+					}
+				}
 			}
 			var inputCmd tea.Cmd
 			m.input, inputCmd = m.input.Update(msg)
@@ -817,18 +846,42 @@ func renderMentions(content, self string) string {
 // ── Tasks screen ──────────────────────────────────────────────────────────────
 
 func (m Model) viewTasks() string {
-	// filter sub-tabs
-	tabs := make([]string, len(taskFilterLabels))
-	for i, label := range taskFilterLabels {
+	all := m.filteredTasks("all")
+	counts := map[string]int{"all": len(all)}
+	for _, t := range all {
+		counts[string(t.Status)]++
+	}
+
+	// stats bar
+	statsBar := fmt.Sprintf("  %s  %s  %s  %s  %s",
+		wipSt.Render(fmt.Sprintf("● %d in progress", counts["in_progress"])),
+		todoSt.Render(fmt.Sprintf("◦ %d todo", counts["todo"])),
+		blockedSt.Render(fmt.Sprintf("✗ %d blocked", counts["blocked"])),
+		doneSt.Render(fmt.Sprintf("✓ %d done", counts["done"])),
+		mutedSt.Render(fmt.Sprintf("%d total", counts["all"])),
+	)
+
+	// tab bar with counts and number hints
+	labels := []string{
+		fmt.Sprintf("1:All(%d)", counts["all"]),
+		fmt.Sprintf("2:Todo(%d)", counts["todo"]),
+		fmt.Sprintf("3:In Progress(%d)", counts["in_progress"]),
+		fmt.Sprintf("4:Done(%d)", counts["done"]),
+		fmt.Sprintf("5:Blocked(%d)", counts["blocked"]),
+	}
+	tabs := make([]string, len(labels))
+	for i, label := range labels {
 		if i == m.taskFilter {
 			tabs[i] = subTabActiveSt.Render(label)
 		} else {
 			tabs[i] = subTabInactiveSt.Render(label)
 		}
 	}
-	tabBar := "  " + strings.Join(tabs, "  ") + mutedSt.Render("   [ ] to switch")
+	tabBar := "  " + strings.Join(tabs, "  ")
+	sep := mutedSt.Render("  " + strings.Repeat("─", m.width-8))
+
 	content := m.tasksVP.View()
-	inner := lipgloss.JoinVertical(lipgloss.Left, tabBar, content)
+	inner := lipgloss.JoinVertical(lipgloss.Left, statsBar, sep, tabBar, content)
 	return screenBoxSt.Width(m.width - 2).Height(m.screenHeight()).Render(inner)
 }
 
@@ -836,50 +889,119 @@ func (m Model) renderTasks() string {
 	var sb strings.Builder
 	filter := taskFilters[m.taskFilter]
 	tasks := m.filteredTasks(filter)
+	cw := m.width - 6
+	if cw < 30 {
+		cw = 30
+	}
+
 	if len(tasks) == 0 {
-		label := taskFilterLabels[m.taskFilter]
-		emptyMsg := "  no tasks yet"
-		if filter != "all" {
-			emptyMsg = "  no " + strings.ToLower(label) + " tasks"
-		}
-		sb.WriteString(mutedSt.Render("\n" + emptyMsg + "\n"))
+		sb.WriteString(mutedSt.Render("\n  no tasks\n"))
 		return sb.String()
 	}
 
-	maxW := m.width - 6
-	if maxW < 20 {
-		maxW = 20
+	if filter == "all" {
+		// render grouped: In Progress → Blocked → Todo → Done
+		type group struct {
+			status protocol.TaskStatus
+			label  string
+		}
+		groups := []group{
+			{protocol.StatusInProgress, "In Progress"},
+			{protocol.StatusBlocked, "Blocked"},
+			{protocol.StatusTodo, "Todo"},
+			{protocol.StatusDone, "Done"},
+		}
+		for _, g := range groups {
+			var items []*protocol.Task
+			for _, t := range tasks {
+				if t.Status == g.status {
+					items = append(items, t)
+				}
+			}
+			if len(items) == 0 {
+				continue
+			}
+			header := fmt.Sprintf(" %s  %d ", g.label, len(items))
+			dashes := cw - len(header) - 4
+			if dashes < 4 {
+				dashes = 4
+			}
+			sb.WriteString("\n  " + mutedSt.Render("──") + sectionTitleSt.Render(header) + mutedSt.Render(strings.Repeat("─", dashes)) + "\n\n")
+			for _, t := range items {
+				sb.WriteString(m.renderTaskRow(t, cw))
+			}
+		}
+	} else {
+		sb.WriteString("\n")
+		for _, t := range tasks {
+			sb.WriteString(m.renderTaskRow(t, cw))
+		}
+	}
+	return sb.String()
+}
+
+func (m Model) renderTaskRow(t *protocol.Task, cw int) string {
+	var sb strings.Builder
+
+	// Fixed column widths (visual chars)
+	const markerW = 13 // "  ● IN PROG  "
+	const idW = 10     // "#a1b2c3d  "
+	const priW = 8
+	const assigneeW = 14
+	const ageW = 9
+
+	rightW := priW + assigneeW + ageW + 4 // +4 for spaces between
+	titleW := cw - markerW - idW - 2 - rightW
+	if titleW < 8 {
+		titleW = 8
 	}
 
-	for _, t := range tasks {
-		badge, badgeSt := statusBadge(t.Status)
-		id := shortID(t.ID)
-		title := truncate(t.Title, maxW-40)
-
-		due := ""
-		if t.DueDate != "" {
-			due = mutedSt.Render("  due:" + t.DueDate)
-		}
-
-		line1 := fmt.Sprintf("  %s  %s  %s%s",
-			badgeSt.Render(badge),
-			mutedSt.Render("#"+id),
-			boldFgSt.Render(title),
-			due,
-		)
-		sb.WriteString(line1 + "\n")
-
-		if t.Description != "" {
-			sb.WriteString("          " + mutedSt.Render(truncate(t.Description, maxW-10)) + "\n")
-		}
-
-		meta := fmt.Sprintf("          %s  assignee: %s  by: %s",
-			priLabel(t.Priority),
-			lipgloss.NewStyle().Foreground(cGreen).Render(t.Assignee),
-			mutedSt.Render(t.UpdatedBy),
-		)
-		sb.WriteString(meta + "\n\n")
+	var markerStr string
+	switch t.Status {
+	case protocol.StatusTodo:
+		markerStr = todoSt.Render("  ◦ TODO     ")
+	case protocol.StatusInProgress:
+		markerStr = wipSt.Render("  ● IN PROG  ")
+	case protocol.StatusDone:
+		markerStr = doneSt.Render("  ✓ DONE     ")
+	case protocol.StatusBlocked:
+		markerStr = blockedSt.Render("  ✗ BLOCKED  ")
+	default:
+		markerStr = mutedSt.Render("  ? ???      ")
 	}
+
+	rawTitle := truncate(t.Title, titleW)
+	pad := titleW - utf8.RuneCountInString(rawTitle)
+	if pad < 0 {
+		pad = 0
+	}
+	title := boldFgSt.Render(rawTitle) + strings.Repeat(" ", pad)
+	id := mutedSt.Render("#" + shortID(t.ID))
+	assignee := lipgloss.NewStyle().Foreground(cGreen).Render("@" + truncate(t.Assignee, 11))
+	age := mutedSt.Render(gh.TimeAgo(t.UpdatedAt))
+
+	line1 := markerStr + id + "  " + title + "  " + priLabel(t.Priority) + "  " + assignee + "  " + age
+	sb.WriteString(line1 + "\n")
+
+	indent := strings.Repeat(" ", markerW+idW+2)
+	if t.Description != "" {
+		descW := cw - markerW - idW - 2
+		if descW > 10 {
+			sb.WriteString(indent + mutedSt.Render(truncate(t.Description, descW)) + "\n")
+		}
+	}
+	var meta []string
+	if t.DueDate != "" {
+		meta = append(meta, "due: "+t.DueDate)
+	}
+	if t.UpdatedBy != "" && t.UpdatedBy != t.Assignee {
+		meta = append(meta, "by: "+t.UpdatedBy)
+	}
+	if len(meta) > 0 {
+		sb.WriteString(indent + mutedSt.Render(strings.Join(meta, "   ")) + "\n")
+	}
+
+	sb.WriteString("\n")
 	return sb.String()
 }
 
@@ -909,153 +1031,349 @@ func (m Model) filteredTasks(filter string) []*protocol.Task {
 // ── GitHub screen ─────────────────────────────────────────────────────────────
 
 func (m Model) viewGitHub() string {
-	var header string
+	var orgBar string
 	if m.ghClient != nil && m.ghClient.IsConfigured() {
-		refresh := "never"
+		status := lipgloss.NewStyle().Foreground(cGreen).Render("●")
+		if !m.connected {
+			status = lipgloss.NewStyle().Foreground(cRed).Render("●")
+		}
+		age := "not fetched"
 		if m.ghData != nil {
-			refresh = gh.TimeAgo(m.ghData.FetchedAt)
+			age = gh.TimeAgo(m.ghData.FetchedAt)
 		}
 		loading := ""
 		if m.ghLoading {
 			loading = mutedSt.Render("  refreshing...")
 		}
-		header = fmt.Sprintf("  org: %s   last fetch: %s%s   [r] refresh",
-			boldFgSt.Render(m.ghClient.Org()), mutedSt.Render(refresh), loading)
+		orgBar = fmt.Sprintf("  %s %s   fetched: %s%s",
+			status, boldFgSt.Render(m.ghClient.Org()), mutedSt.Render(age), loading)
 	} else {
-		header = sectionTitleSt.Render("  GitHub not configured")
+		orgBar = mutedSt.Render("  GitHub not configured — run /github setup")
 	}
 
-	// sub-tabs
-	tabs := make([]string, len(ghTabLabels))
+	// tab bar with counts and number hints
+	labels := make([]string, len(ghTabLabels))
 	for i, label := range ghTabLabels {
+		prefix := fmt.Sprintf("%d:", i+1)
 		if m.ghData != nil {
-			switch i {
-			case 1:
-				label = fmt.Sprintf("%s (%d)", label, len(m.ghData.PRs))
-			case 2:
-				label = fmt.Sprintf("%s (%d)", label, len(m.ghData.Issues))
+			switch ghTabs[i] {
+			case "repos":
+				label = fmt.Sprintf("%s(%d)", label, len(m.ghData.Repos))
+			case "prs":
+				label = fmt.Sprintf("%s(%d)", label, len(m.ghData.PRs))
+			case "issues":
+				label = fmt.Sprintf("%s(%d)", label, len(m.ghData.Issues))
 			}
 		}
+		labels[i] = prefix + label
+	}
+	tabs := make([]string, len(labels))
+	for i, label := range labels {
 		if i == m.ghTab {
 			tabs[i] = subTabActiveSt.Render(label)
 		} else {
 			tabs[i] = subTabInactiveSt.Render(label)
 		}
 	}
-	tabBar := "  " + strings.Join(tabs, "  ") + mutedSt.Render("   [ ] to switch")
+	tabBar := "  " + strings.Join(tabs, "  ")
+	sep := mutedSt.Render("  " + strings.Repeat("─", m.width-8))
 
 	content := m.githubVP.View()
-	inner := lipgloss.JoinVertical(lipgloss.Left, header, tabBar, content)
+	inner := lipgloss.JoinVertical(lipgloss.Left, orgBar, sep, tabBar, content)
 	return screenBoxSt.Width(m.width - 2).Height(m.screenHeight()).Render(inner)
 }
 
 func (m Model) renderGitHub() string {
 	var sb strings.Builder
+	cw := m.width - 6
+	if cw < 30 {
+		cw = 30
+	}
 
 	if m.ghClient == nil || !m.ghClient.IsConfigured() {
 		sb.WriteString("\n")
 		sb.WriteString(sectionTitleSt.Render("  Setup GitHub integration") + "\n\n")
-		sb.WriteString(mutedSt.Render("  run this command in the input:\n\n"))
-		sb.WriteString(msgTextSt.Render(`  /github setup --token ghp_yourtoken --org yourorgname`) + "\n\n")
-		sb.WriteString(mutedSt.Render("  your token needs read:org and repo scopes\n"))
+		sb.WriteString(mutedSt.Render("  /github setup --token ghp_yourtoken --org yourorg\n\n"))
+		sb.WriteString(mutedSt.Render("  token needs: repo + read:org scopes (Classic PAT)\n"))
 		return sb.String()
 	}
-
 	if m.ghLoading && m.ghData == nil {
 		sb.WriteString(mutedSt.Render("\n  fetching from github...\n"))
 		return sb.String()
 	}
-
 	if m.ghErr != "" && m.ghData == nil {
 		sb.WriteString("\n" + lipgloss.NewStyle().Foreground(cRed).Render("  error: "+m.ghErr) + "\n")
-		sb.WriteString(mutedSt.Render("  type /github refresh to try again\n"))
+		sb.WriteString(mutedSt.Render("  /github refresh to try again\n"))
 		return sb.String()
 	}
-
 	if m.ghData == nil {
-		sb.WriteString(mutedSt.Render("\n  no data yet  -  type /github refresh\n"))
+		sb.WriteString(mutedSt.Render("\n  /github refresh to load data\n"))
 		return sb.String()
 	}
 
 	switch ghTabs[m.ghTab] {
 	case "overview":
-		sb.WriteString("\n")
-		sb.WriteString("  " + sectionTitleSt.Render("repositories") + "\n\n")
-		for _, r := range m.ghData.Repos {
+		sb.WriteString(m.renderGHOverview(cw))
+	case "repos":
+		sb.WriteString(m.renderGHRepos(cw))
+	case "prs":
+		sb.WriteString(m.renderGHPRs(cw))
+	case "issues":
+		sb.WriteString(m.renderGHIssues(cw))
+	}
+	return sb.String()
+}
+
+func (m Model) renderGHOverview(cw int) string {
+	var sb strings.Builder
+	d := m.ghData
+
+	// stat boxes
+	boxW := 18
+	gap := "   "
+	repoBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(cBorder).
+		Padding(0, 2).Width(boxW).Align(lipgloss.Center).
+		Render(boldFgSt.Render(fmt.Sprintf("%d", len(d.Repos))) + "\n" + mutedSt.Render("repos"))
+	prBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(cBorder).
+		Padding(0, 2).Width(boxW).Align(lipgloss.Center).
+		Render(wipSt.Render(fmt.Sprintf("%d", len(d.PRs))) + "\n" + mutedSt.Render("open PRs"))
+	issueBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(cBorder).
+		Padding(0, 2).Width(boxW).Align(lipgloss.Center).
+		Render(todoSt.Render(fmt.Sprintf("%d", len(d.Issues))) + "\n" + mutedSt.Render("open issues"))
+	sb.WriteString("\n")
+	sb.WriteString("  " + lipgloss.JoinHorizontal(lipgloss.Top, repoBox, gap, prBox, gap, issueBox) + "\n\n")
+
+	// recently pushed repos
+	if len(d.Repos) > 0 {
+		n := len(d.Repos)
+		if n > 5 {
+			n = 5
+		}
+		sb.WriteString("  " + sectionTitleSt.Render("Recently pushed") + "\n")
+		sb.WriteString("  " + mutedSt.Render(strings.Repeat("─", cw-4)) + "\n")
+		for _, r := range d.Repos[:n] {
 			priv := ""
 			if r.Private {
-				priv = mutedSt.Render(" [private]")
+				priv = mutedSt.Render("[prv] ")
 			}
 			desc := ""
 			if r.Description != "" {
-				desc = "  " + mutedSt.Render(truncate(r.Description, m.width-40))
+				descW := cw - 30
+				if descW > 5 {
+					desc = "  " + mutedSt.Render(truncate(r.Description, descW))
+				}
 			}
 			sb.WriteString(fmt.Sprintf("  %s%s%s\n",
-				boldFgSt.Render(r.Name), priv, desc))
-			sb.WriteString(fmt.Sprintf("     %s stars  %s issues  %s\n",
-				mutedSt.Render(fmt.Sprintf("%d", r.Stars)),
-				mutedSt.Render(fmt.Sprintf("%d", r.OpenIssues)),
-				mutedSt.Render("pushed "+gh.TimeAgo(r.PushedAt)),
+				priv+boldFgSt.Render(truncate(r.Name, 22)),
+				desc,
+				mutedSt.Render(fmt.Sprintf("  pushed %s  ★%d", gh.TimeAgo(r.PushedAt), r.Stars)),
 			))
-			sb.WriteString("\n")
 		}
-		if len(m.ghData.Members) > 0 {
-			sb.WriteString("  " + sectionTitleSt.Render("org members") + "\n\n")
-			names := make([]string, len(m.ghData.Members))
-			for i, mem := range m.ghData.Members {
-				names[i] = lipgloss.NewStyle().Foreground(cRedDim).Render(mem.Login)
-			}
-			sb.WriteString("  " + strings.Join(names, "  ") + "\n")
-		}
-
-	case "prs":
 		sb.WriteString("\n")
-		if len(m.ghData.PRs) == 0 {
-			sb.WriteString(mutedSt.Render("  no open pull requests\n"))
-			break
+	}
+
+	// recent PRs preview
+	if len(d.PRs) > 0 {
+		n := len(d.PRs)
+		if n > 5 {
+			n = 5
 		}
-		for _, pr := range m.ghData.PRs {
+		sb.WriteString("  " + sectionTitleSt.Render("Recent pull requests") + "\n")
+		sb.WriteString("  " + mutedSt.Render(strings.Repeat("─", cw-4)) + "\n")
+		for _, pr := range d.PRs[:n] {
 			draft := ""
 			if pr.Draft {
-				draft = mutedSt.Render(" [draft]")
+				draft = mutedSt.Render("[draft] ")
 			}
-			lbs := renderLabels(pr.Labels)
-			sb.WriteString(fmt.Sprintf("  %s  %s  %s%s%s\n",
+			sb.WriteString(fmt.Sprintf("  %s  %s  %s%s  %s\n",
 				mutedSt.Render(fmt.Sprintf("#%-4d", pr.Number)),
-				lipgloss.NewStyle().Foreground(cRedDim).Render(pr.RepoName),
-				boldFgSt.Render(truncate(pr.Title, m.width-45)),
+				lipgloss.NewStyle().Foreground(cRedDim).Render(truncate(pr.RepoName, 16)),
 				draft,
-				lbs,
-			))
-			sb.WriteString(fmt.Sprintf("       by %s   %s\n",
-				lipgloss.NewStyle().Foreground(cGreen).Render(pr.Login),
+				boldFgSt.Render(truncate(pr.Title, cw-50)),
 				mutedSt.Render(gh.TimeAgo(pr.UpdatedAt)),
 			))
-			sb.WriteString("\n")
 		}
-
-	case "issues":
 		sb.WriteString("\n")
-		if len(m.ghData.Issues) == 0 {
-			sb.WriteString(mutedSt.Render("  no open issues\n"))
-			break
+	}
+
+	// org members
+	if len(d.Members) > 0 {
+		sb.WriteString("  " + sectionTitleSt.Render(fmt.Sprintf("Org members (%d)", len(d.Members))) + "\n")
+		sb.WriteString("  " + mutedSt.Render(strings.Repeat("─", cw-4)) + "\n  ")
+		for i, mem := range d.Members {
+			if i > 0 {
+				sb.WriteString("  ")
+			}
+			sb.WriteString(lipgloss.NewStyle().Foreground(cRedDim).Render(mem.Login))
 		}
-		for _, issue := range m.ghData.Issues {
-			lbs := renderLabels(issue.Labels)
-			sb.WriteString(fmt.Sprintf("  %s  %s  %s%s\n",
-				mutedSt.Render(fmt.Sprintf("#%-4d", issue.Number)),
-				lipgloss.NewStyle().Foreground(cRedDim).Render(issue.RepoName),
-				boldFgSt.Render(truncate(issue.Title, m.width-45)),
-				lbs,
-			))
-			sb.WriteString(fmt.Sprintf("       by %s   %s\n",
-				lipgloss.NewStyle().Foreground(cGreen).Render(issue.Login),
-				mutedSt.Render(gh.TimeAgo(issue.UpdatedAt)),
-			))
-			sb.WriteString("\n")
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func (m Model) renderGHRepos(cw int) string {
+	var sb strings.Builder
+	d := m.ghData
+	if len(d.Repos) == 0 {
+		sb.WriteString(mutedSt.Render("\n  no repositories\n"))
+		return sb.String()
+	}
+
+	// column widths
+	nameW := 24
+	starsW := 6
+	issuesW := 8
+	pushedW := 10
+	descW := cw - nameW - starsW - issuesW - pushedW - 10
+	if descW < 10 {
+		descW = 10
+	}
+
+	// header
+	sb.WriteString("\n")
+	hdr := fmt.Sprintf("  %-*s  %-*s  %*s  %-*s  %-s",
+		nameW, "Name",
+		descW, "Description",
+		starsW, "★",
+		issuesW, "Issues",
+		"Updated",
+	)
+	sb.WriteString(mutedSt.Render(hdr) + "\n")
+	sb.WriteString(mutedSt.Render("  " + strings.Repeat("─", cw-4)) + "\n")
+
+	for _, r := range d.Repos {
+		priv := ""
+		if r.Private {
+			priv = mutedSt.Render("[prv] ")
+		}
+		name := priv + boldFgSt.Render(truncate(r.Name, nameW-6))
+		desc := mutedSt.Render(truncate(r.Description, descW))
+		stars := mutedSt.Render(fmt.Sprintf("%*d", starsW, r.Stars))
+		issues := mutedSt.Render(fmt.Sprintf("%-*d", issuesW, r.OpenIssues))
+		pushed := mutedSt.Render(gh.TimeAgo(r.PushedAt))
+		sb.WriteString(fmt.Sprintf("  %-*s  %-*s  %s  %-*s  %s\n",
+			nameW, name,
+			descW, desc,
+			stars,
+			issuesW, issues,
+			pushed,
+		))
+	}
+	return sb.String()
+}
+
+func (m Model) renderGHPRs(cw int) string {
+	var sb strings.Builder
+	d := m.ghData
+	if len(d.PRs) == 0 {
+		sb.WriteString(mutedSt.Render("\n  no open pull requests\n"))
+		return sb.String()
+	}
+
+	// group by repo
+	type repoGroup struct {
+		name string
+		prs  []gh.PR
+	}
+	seen := map[string]int{}
+	var groups []repoGroup
+	for _, pr := range d.PRs {
+		if idx, ok := seen[pr.RepoName]; ok {
+			groups[idx].prs = append(groups[idx].prs, pr)
+		} else {
+			seen[pr.RepoName] = len(groups)
+			groups = append(groups, repoGroup{name: pr.RepoName, prs: []gh.PR{pr}})
 		}
 	}
 
+	titleW := cw - 8 - 16 - 16 - 10 // num + repo + author + age
+	if titleW < 10 {
+		titleW = 10
+	}
+
+	for _, g := range groups {
+		header := fmt.Sprintf(" %s  %d PR ", g.name, len(g.prs))
+		dashes := cw - len(header) - 4
+		if dashes < 4 {
+			dashes = 4
+		}
+		sb.WriteString("\n  " + mutedSt.Render("──") + sectionTitleSt.Render(header) + mutedSt.Render(strings.Repeat("─", dashes)) + "\n\n")
+		for _, pr := range g.prs {
+			marker := lipgloss.NewStyle().Foreground(cGreen).Render("●")
+			if pr.Draft {
+				marker = mutedSt.Render("○")
+			}
+			draft := ""
+			if pr.Draft {
+				draft = mutedSt.Render("[draft] ")
+			}
+			lbs := renderLabels(pr.Labels)
+			line := fmt.Sprintf("    %s %s  %s%s%s",
+				marker,
+				mutedSt.Render(fmt.Sprintf("#%-4d", pr.Number)),
+				draft+boldFgSt.Render(truncate(pr.Title, titleW)),
+				lbs,
+				mutedSt.Render(fmt.Sprintf("  @%s  %s", truncate(pr.Login, 12), gh.TimeAgo(pr.UpdatedAt))),
+			)
+			sb.WriteString(line + "\n")
+		}
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (m Model) renderGHIssues(cw int) string {
+	var sb strings.Builder
+	d := m.ghData
+	if len(d.Issues) == 0 {
+		sb.WriteString(mutedSt.Render("\n  no open issues\n"))
+		return sb.String()
+	}
+
+	// group by repo
+	type repoGroup struct {
+		name   string
+		issues []gh.Issue
+	}
+	seen := map[string]int{}
+	var groups []repoGroup
+	for _, issue := range d.Issues {
+		if idx, ok := seen[issue.RepoName]; ok {
+			groups[idx].issues = append(groups[idx].issues, issue)
+		} else {
+			seen[issue.RepoName] = len(groups)
+			groups = append(groups, repoGroup{name: issue.RepoName, issues: []gh.Issue{issue}})
+		}
+	}
+
+	titleW := cw - 8 - 16 - 16 - 10
+	if titleW < 10 {
+		titleW = 10
+	}
+
+	for _, g := range groups {
+		header := fmt.Sprintf(" %s  %d issue ", g.name, len(g.issues))
+		dashes := cw - len(header) - 4
+		if dashes < 4 {
+			dashes = 4
+		}
+		sb.WriteString("\n  " + mutedSt.Render("──") + sectionTitleSt.Render(header) + mutedSt.Render(strings.Repeat("─", dashes)) + "\n\n")
+		for _, issue := range g.issues {
+			lbs := renderLabels(issue.Labels)
+			line := fmt.Sprintf("    %s %s  %s%s%s",
+				todoSt.Render("◦"),
+				mutedSt.Render(fmt.Sprintf("#%-4d", issue.Number)),
+				boldFgSt.Render(truncate(issue.Title, titleW))+lbs,
+				"",
+				mutedSt.Render(fmt.Sprintf("  @%s  %s", truncate(issue.Login, 12), gh.TimeAgo(issue.UpdatedAt))),
+			)
+			sb.WriteString(line + "\n")
+		}
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }
 
@@ -1218,8 +1536,8 @@ func (m *Model) rebuildViewports() {
 	ph := clamp(m.height-7, 2, m.height)
 	m.homeVP = viewport.New(hw, homeH)
 	m.chatVP = viewport.New(w, ph)
-	m.tasksVP = viewport.New(w, clamp(ph-1, 2, ph))  // 1 line tab bar
-	m.githubVP = viewport.New(w, clamp(ph-2, 2, ph)) // header + tab bar
+	m.tasksVP = viewport.New(w, clamp(ph-3, 2, ph))  // statsBar + sep + tabBar
+	m.githubVP = viewport.New(w, clamp(ph-3, 2, ph)) // orgBar + sep + tabBar
 	m.membersVP = viewport.New(w, ph)
 }
 

@@ -481,18 +481,33 @@
   <h2>Available tools</h2>
   <table>
     <tr><th>tool</th><th>description</th></tr>
-    <tr><td><code>list_tasks</code></td><td>get all tasks, optionally filtered by assignee or status</td></tr>
+    <tr><td><code>team_context</code></td><td><strong>start here</strong> — returns full markdown with all members, task counts, and per-person breakdown with IDs. Use this first to understand the team state.</td></tr>
+    <tr><td><code>get_task</code></td><td>look up a single task by ID prefix; returns all fields including description, assignee, priority, due date, and who last updated it</td></tr>
+    <tr><td><code>search_tasks</code></td><td>case-insensitive keyword search across task titles and descriptions</td></tr>
+    <tr><td><code>list_tasks</code></td><td>get all tasks as formatted markdown, optionally filtered by assignee or status</td></tr>
     <tr><td><code>list_members</code></td><td>get all connected members and their online status</td></tr>
-    <tr><td><code>create_task</code></td><td>create a new task with title, description, assignee, priority, due date</td></tr>
-    <tr><td><code>update_task</code></td><td>change a task's status (todo / in_progress / done / blocked)</td></tr>
-    <tr><td><code>delete_task</code></td><td>delete a task by ID prefix</td></tr>
-    <tr><td><code>send_message</code></td><td>send a chat message to the team</td></tr>
-    <tr><td><code>get_dashboard</code></td><td>get a full summary: members, tasks, recent messages</td></tr>
+    <tr><td><code>create_task</code></td><td>create a new task with title, description, assignee, priority, and optional due date</td></tr>
+    <tr><td><code>update_task</code></td><td>change a task's status (todo / in_progress / done / blocked); automatically records <code>updated_by = "claude"</code></td></tr>
+    <tr><td><code>delete_task</code></td><td>permanently delete a task by ID prefix — consider <code>update_task</code> to <code>done</code> instead</td></tr>
+    <tr><td><code>send_message</code></td><td>send a chat message to the team (from "claude" by default)</td></tr>
+    <tr><td><code>get_dashboard</code></td><td>get a full markdown summary: members, tasks per person, recent messages</td></tr>
   </table>
+
+  <h2>Claude Code / VSCode extension</h2>
+  <p>Add wert to your Claude Code MCP config at <code>~/.claude/claude_desktop_config.json</code> (or the VS Code extension settings):</p>
+  <pre>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"wert"</span>: {
+      <span class="s">"command"</span>: <span class="s">"wert"</span>,
+      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://192.168.1.5:8080"</span>]
+    }
+  }
+}</pre>
+  <p>Once connected, ask Claude to run <code>team_context</code> first. It returns everything needed to understand the current task board without any follow-up calls.</p>
 
   <div class="callout">
     <span class="callout-icon">ℹ</span>
-    <span>The MCP server talks to the REST API — no WebSocket needed. It does not receive real-time updates; use <code>get_dashboard</code> to fetch current state.</span>
+    <span>The MCP server talks to the REST API — no WebSocket needed. It does not receive real-time updates; use <code>get_dashboard</code> or <code>team_context</code> to fetch current state.</span>
   </div>
 </section>
 
@@ -576,8 +591,17 @@
     <tr><td>blocked</td><td><code>/blocked &lt;id&gt;</code></td><td style="color:#EF9A9A">dim red</td></tr>
   </table>
 
-  <h2>Filters</h2>
-  <p>Use <span class="kbd">[</span> and <span class="kbd">]</span> to cycle through filters: <strong>All / Todo / In Progress / Done / Blocked</strong>.</p>
+  <h2>Sub-tabs and filters</h2>
+  <p>Press number keys <span class="kbd">1</span>–<span class="kbd">5</span> while on the Tasks screen (when the input box is empty) to jump directly to a filter tab:</p>
+  <table>
+    <tr><th>key</th><th>filter</th></tr>
+    <tr><td><span class="kbd">1</span></td><td>All tasks</td></tr>
+    <tr><td><span class="kbd">2</span></td><td>Todo</td></tr>
+    <tr><td><span class="kbd">3</span></td><td>In Progress</td></tr>
+    <tr><td><span class="kbd">4</span></td><td>Done</td></tr>
+    <tr><td><span class="kbd">5</span></td><td>Blocked</td></tr>
+  </table>
+  <p>You can also use <span class="kbd">[</span> and <span class="kbd">]</span> to cycle through filters left and right.</p>
 
   <h2>Creating tasks (admin)</h2>
   <pre><span class="c"># basic</span>
@@ -615,7 +639,15 @@
   <pre>/github refresh</pre>
 
   <h2>Sub-tabs</h2>
-  <p>Press <span class="kbd">[</span> / <span class="kbd">]</span> to switch between <strong>Overview</strong>, <strong>Pull Requests</strong>, and <strong>Issues</strong>.</p>
+  <p>Press number keys <span class="kbd">1</span>–<span class="kbd">4</span> while on the GitHub screen (when the input box is empty) to jump to a tab:</p>
+  <table>
+    <tr><th>key</th><th>tab</th><th>shows</th></tr>
+    <tr><td><span class="kbd">1</span></td><td>Overview</td><td>stat boxes, recently pushed repos, recent PRs, org members</td></tr>
+    <tr><td><span class="kbd">2</span></td><td>Repos</td><td>full repo table — name, description, stars, open issues, last push</td></tr>
+    <tr><td><span class="kbd">3</span></td><td>Pull Requests</td><td>open PRs grouped by repo, with author and age</td></tr>
+    <tr><td><span class="kbd">4</span></td><td>Issues</td><td>open issues grouped by repo, with labels, author, age</td></tr>
+  </table>
+  <p>You can also use <span class="kbd">[</span> / <span class="kbd">]</span> to cycle through tabs.</p>
 
   <h2>Personal accounts</h2>
   <p>wert automatically falls back from the <code>org:</code> search qualifier to <code>user:</code>, and then to a per-repo search if needed. Personal accounts and orgs both work.</p>
