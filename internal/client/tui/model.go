@@ -17,6 +17,7 @@ import (
 	"wert/internal/client"
 	gh "wert/internal/github"
 	"wert/internal/protocol"
+	"wert/internal/version"
 )
 
 // ── Screens ───────────────────────────────────────────────────────────────────
@@ -113,6 +114,10 @@ var (
 		Padding(0, 1)
 )
 
+// UpdateRequested is set to true when the user types :update in the cmdline.
+// The outer cobra command reads this after the TUI exits and runs the updater.
+var UpdateRequested bool
+
 // ── Tea message types ─────────────────────────────────────────────────────────
 
 type ServerMsg struct{ Env protocol.Envelope }
@@ -125,6 +130,7 @@ type githubDataMsg struct {
 	data *gh.OrgData
 	err  error
 }
+type approvalTickMsg struct{} // drives the waiting-for-approval animation
 
 // ── Task filter tabs ──────────────────────────────────────────────────────────
 
@@ -194,6 +200,17 @@ type Model struct {
 	// workstation screen
 	wsPane  *paneNode       // split layout within workstation (nil = default tasks|chat)
 	wsInput textinput.Model // message input inside workstation
+
+	// join approval — admin side
+	joinReqPopup   bool     // floating Y/N popup is visible
+	joinReqCurrent string   // username shown in the popup
+	joinReqQueue   []string // overflow queue when popup is already open
+
+	// join approval — member side
+	pendingJoins    []string // badge count of pending join requests (admin sees this)
+	pendingApproval bool     // this client is waiting for admin to approve them
+	approvalFrame   int      // animation frame for waiting screen
+	joinRejected    bool     // rejected by admin
 }
 
 func New(
@@ -246,10 +263,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshContent()
 		return m, nil
 
+	case approvalTickMsg:
+		m.approvalFrame = (m.approvalFrame + 1) % 12
+		if m.pendingApproval {
+			return m, approvalTick()
+		}
+		return m, nil
+
 	case ServerMsg:
+		wasApproval := m.pendingApproval
 		m = m.applyEnvelope(msg.Env)
 		m.refreshContent()
-		return m, waitForMsg(m.cl.Recv)
+		cmds := []tea.Cmd{waitForMsg(m.cl.Recv)}
+		if m.pendingApproval && !wasApproval {
+			cmds = append(cmds, approvalTick())
+		}
+		return m, tea.Batch(cmds...)
 
 	case DisconnectedMsg:
 		m.connected = false
@@ -288,6 +317,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Join request popup intercepts all keys when active.
+		if m.joinReqPopup && m.role == "admin" {
+			switch strings.ToLower(msg.String()) {
+			case "y":
+				m.cl.SendJoinApprove(m.joinReqCurrent)
+				m.removePendingJoin(m.joinReqCurrent)
+				m.statusMsg = "approved " + m.joinReqCurrent
+				m.advanceJoinQueue()
+			case "n", "esc":
+				m.cl.SendJoinReject(m.joinReqCurrent)
+				m.removePendingJoin(m.joinReqCurrent)
+				m.statusMsg = "rejected " + m.joinReqCurrent
+				m.advanceJoinQueue()
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "ctrl+q":
 			return m, tea.Quit
@@ -479,7 +525,16 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "loading..."
 	}
+	if m.pendingApproval {
+		return m.viewWaitingApproval()
+	}
+	if m.joinRejected {
+		return m.viewRejected()
+	}
 	base := m.viewBase()
+	if m.joinReqPopup {
+		return m.viewJoinPopup(base)
+	}
 	if m.cmdlineActive {
 		return m.overlayCmd(base)
 	}
@@ -631,6 +686,9 @@ func (m Model) viewHeader() string {
 	}
 	if m.unreadChat > 0 && m.screen != scrChat {
 		left += "  " + unreadBadgeSt.Render(fmt.Sprintf("%d", m.unreadChat))
+	}
+	if len(m.pendingJoins) > 0 {
+		left += "  " + lipgloss.NewStyle().Background(cYellow).Foreground(lipgloss.Color("#000000")).Bold(true).Padding(0, 1).Render(fmt.Sprintf("⏳ %d pending", len(m.pendingJoins)))
 	}
 	right := fmt.Sprintf("%s  %s  %d online", m.username, role, online)
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
@@ -1478,7 +1536,13 @@ func (m Model) viewStatus() string {
 	if !m.connected {
 		conn = lipgloss.NewStyle().Foreground(cRed).Bold(true).Render("* OFFLINE  ")
 	}
-	return conn + statusBarSt.Render(m.statusMsg)
+	left := conn + statusBarSt.Render(m.statusMsg)
+	ver := mutedSt.Render(version.Version)
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(ver)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + ver
 }
 
 func (m Model) viewInput() string {
@@ -1590,6 +1654,9 @@ func (m *Model) handleHomeCmd(text string) tea.Cmd {
 	switch cmd {
 	case "q", "q!", "quit":
 		return tea.Quit
+	case "update":
+		UpdateRequested = true
+		return tea.Quit
 	case "docs":
 		openBrowser("https://wert-docs.vercel.app")
 		return nil
@@ -1624,7 +1691,7 @@ func (m *Model) handleHomeCmd(text string) tea.Cmd {
 		m.screen = scrMembers
 		m.refreshContent()
 	default:
-		m.statusMsg = "unknown: try  q  1-5  sp v<n> [h<n>]  cl"
+		m.statusMsg = "unknown: try  q  1-6  docs  update  sp v<n> [h<n>]  cl"
 	}
 	return nil
 }
@@ -1640,10 +1707,36 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 	case "/exit", "/quit":
 		return tea.Quit
 
+	case "/accept":
+		if m.role != "admin" {
+			m.statusMsg = "only admins can accept join requests"
+			return nil
+		}
+		if len(fields) < 2 {
+			m.statusMsg = "usage: /accept <username>"
+			return nil
+		}
+		m.cl.SendJoinApprove(fields[1])
+		m.statusMsg = "approved " + fields[1]
+		return nil
+
+	case "/reject":
+		if m.role != "admin" {
+			m.statusMsg = "only admins can reject join requests"
+			return nil
+		}
+		if len(fields) < 2 {
+			m.statusMsg = "usage: /reject <username>"
+			return nil
+		}
+		m.cl.SendJoinReject(fields[1])
+		m.statusMsg = "rejected " + fields[1]
+		return nil
+
 	case "/help":
 		lines := []string{
 			"",
-			"  navigation:  1-5 switch screens   tab next screen   [ ] filter sub-tabs   esc go back",
+			"  navigation:  1-6 switch screens   tab next screen   [ ] filter sub-tabs   esc go back",
 			"",
 			"  /done <id>           mark task done",
 			"  /wip <id>            mark in progress",
@@ -1655,6 +1748,8 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 			lines = append(lines,
 				`  /assign @user "title" ["desc"] [priority] [due:YYYY-MM-DD]   create task`,
 				"  /delete <id>         remove task",
+				"  /accept <username>   approve a pending join request",
+				"  /reject <username>   deny a pending join request",
 			)
 		}
 		lines = append(lines,
@@ -1819,6 +1914,7 @@ func (m Model) applyEnvelope(env protocol.Envelope) Model {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return m
 		}
+		m.pendingApproval = false
 		m.role = p.Role
 		m.tasks = make([]*protocol.Task, len(p.Tasks))
 		for i := range p.Tasks {
@@ -1928,7 +2024,42 @@ func (m Model) applyEnvelope(env protocol.Envelope) Model {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return m
 		}
+		if m.pendingApproval && strings.Contains(p.Message, "rejected") {
+			m.pendingApproval = false
+			m.joinRejected = true
+			return m
+		}
 		m.statusMsg = "  " + p.Message
+
+	case protocol.MsgJoinPending:
+		m.pendingApproval = true
+
+	case protocol.MsgJoinRequest:
+		var p protocol.JoinRequestPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		m.pendingJoins = append(m.pendingJoins, p.Username)
+		if !m.joinReqPopup {
+			m.joinReqPopup = true
+			m.joinReqCurrent = p.Username
+		} else {
+			m.joinReqQueue = append(m.joinReqQueue, p.Username)
+		}
+
+	case protocol.MsgJoinApprove:
+		var p protocol.JoinApprovePayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		m.removePendingJoin(p.Username)
+
+	case protocol.MsgJoinReject:
+		var p protocol.JoinRejectPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		m.removePendingJoin(p.Username)
 	}
 	return m
 }
@@ -1960,6 +2091,181 @@ func fetchGitHub(cl *gh.Client) tea.Cmd {
 }
 
 // ── misc helpers ──────────────────────────────────────────────────────────────
+
+// ── Join approval helpers ─────────────────────────────────────────────────────
+
+func (m *Model) removePendingJoin(username string) {
+	out := m.pendingJoins[:0]
+	for _, u := range m.pendingJoins {
+		if u != username {
+			out = append(out, u)
+		}
+	}
+	m.pendingJoins = out
+}
+
+func (m *Model) advanceJoinQueue() {
+	if len(m.joinReqQueue) == 0 {
+		m.joinReqPopup = false
+		m.joinReqCurrent = ""
+		return
+	}
+	m.joinReqCurrent = m.joinReqQueue[0]
+	m.joinReqQueue = m.joinReqQueue[1:]
+}
+
+// viewJoinPopup overlays a Y/N popup centred on base.
+func (m Model) viewJoinPopup(base string) string {
+	const boxW = 50
+	const innerW = boxW - 2
+
+	bSt := lipgloss.NewStyle().Foreground(cYellow)
+	labelSt2 := lipgloss.NewStyle().Foreground(cFg).Bold(true)
+	mutSt := lipgloss.NewStyle().Foreground(cMuted)
+
+	title := " Join Request "
+	dashes := innerW - len(title)
+	lDash, rDash := dashes/2, dashes-dashes/2
+	topLine := bSt.Render("╭"+strings.Repeat("─", lDash)) + labelSt2.Render(title) + bSt.Render(strings.Repeat("─", rDash)+"╮")
+
+	empty := bSt.Render("│") + strings.Repeat(" ", innerW) + bSt.Render("│")
+
+	user := m.joinReqCurrent
+	msg := "  " + lipgloss.NewStyle().Foreground(cFg).Bold(true).Render(user) + mutSt.Render(" wants to join the workspace")
+	msgPlain := "  " + user + " wants to join the workspace"
+	msgPad := strings.Repeat(" ", innerW-len(msgPlain))
+	userLine := bSt.Render("│") + msg + msgPad + bSt.Render("│")
+
+	yKey := lipgloss.NewStyle().Background(cGreen).Foreground(lipgloss.Color("#000000")).Bold(true).Padding(0, 2).Render("Y  accept")
+	nKey := lipgloss.NewStyle().Background(cRedDark).Foreground(cFg).Bold(true).Padding(0, 2).Render("N  reject")
+	keys := "  " + yKey + "    " + nKey
+	keysPlain := "  " + "Y  accept" + "    " + "N  reject"
+	keysPad := strings.Repeat(" ", innerW-len(keysPlain)-4) // -4 for padding in badges
+	keysLine := bSt.Render("│") + keys + keysPad + bSt.Render("│")
+
+	var queueLine string
+	if len(m.joinReqQueue) > 0 {
+		ql := fmt.Sprintf("  %d more pending", len(m.joinReqQueue))
+		queueLine = bSt.Render("│") + mutSt.Render(ql) + strings.Repeat(" ", innerW-len(ql)) + bSt.Render("│")
+	} else {
+		queueLine = empty
+	}
+
+	botLine := bSt.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	box := strings.Join([]string{topLine, empty, userLine, empty, keysLine, queueLine, botLine}, "\n")
+	boxLines := strings.Split(box, "\n")
+	boxH := len(boxLines)
+
+	baseLines := strings.Split(base, "\n")
+	total := len(baseLines)
+	startRow := (total - boxH) / 2
+	startCol := (m.width - boxW) / 2
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	result := make([]string, total)
+	copy(result, baseLines)
+	for i, bl := range boxLines {
+		row := startRow + i
+		if row < 0 || row >= total {
+			continue
+		}
+		visual := []rune(stripANSI(result[row]))
+		for len(visual) < m.width {
+			visual = append(visual, ' ')
+		}
+		leftEnd := startCol
+		if leftEnd > len(visual) {
+			leftEnd = len(visual)
+		}
+		right := ""
+		if rs := startCol + boxW; rs < len(visual) {
+			right = string(visual[rs:])
+		}
+		result[row] = string(visual[:leftEnd]) + bl + right
+	}
+	return strings.Join(result, "\n")
+}
+
+// viewWaitingApproval renders the animated waiting screen for pending members.
+func (m Model) viewWaitingApproval() string {
+	spinFrames := []string{"|", "/", "-", "\\", "|", "/", "-", "\\", "|", "/", "-", "\\"}
+	spin := spinFrames[m.approvalFrame%len(spinFrames)]
+
+	dotCount := (m.approvalFrame / 3) % 4
+	dots := strings.Repeat(".", dotCount) + strings.Repeat(" ", 3-dotCount)
+
+	bSt := lipgloss.NewStyle().Foreground(cYellow)
+	mutSt := lipgloss.NewStyle().Foreground(cMuted)
+	fgSt := lipgloss.NewStyle().Foreground(cFg).Bold(true)
+
+	const boxW = 52
+	const innerW = boxW - 2
+
+	title := " wert "
+	dashes := innerW - len(title)
+	lD, rD := dashes/2, dashes-dashes/2
+	top := bSt.Render("╭"+strings.Repeat("─", lD)) + fgSt.Render(title) + bSt.Render(strings.Repeat("─", rD)+"╮")
+	bot := bSt.Render("╰" + strings.Repeat("─", innerW) + "╯")
+	empty := bSt.Render("│") + strings.Repeat(" ", innerW) + bSt.Render("│")
+
+	line1text := spin + "  waiting for admin approval" + dots
+	line1pad := strings.Repeat(" ", innerW-2-len(line1text))
+	line1 := bSt.Render("│") + "  " + bSt.Render(spin) + fgSt.Render("  waiting for admin approval") + mutSt.Render(dots) + line1pad + bSt.Render("│")
+
+	line2text := "  admin must run:  /accept " + m.username
+	line2pad := strings.Repeat(" ", innerW-len(line2text))
+	line2 := bSt.Render("│") + mutSt.Render(line2text) + line2pad + bSt.Render("│")
+
+	_ = line1text // suppress unused
+
+	box := strings.Join([]string{top, empty, line1, line2, empty, bot}, "\n")
+
+	pad := (m.height - 6) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	centeredBox := lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(box)
+	return strings.Repeat("\n", pad) + centeredBox
+}
+
+// viewRejected renders the rejection screen.
+func (m Model) viewRejected() string {
+	bSt := lipgloss.NewStyle().Foreground(cRed)
+	fgSt := lipgloss.NewStyle().Foreground(cFg).Bold(true)
+	mutSt := lipgloss.NewStyle().Foreground(cMuted)
+
+	const boxW = 46
+	const innerW = boxW - 2
+
+	title := " Access Denied "
+	dashes := innerW - len(title)
+	lD, rD := dashes/2, dashes-dashes/2
+	top := bSt.Render("╭"+strings.Repeat("─", lD)) + fgSt.Render(title) + bSt.Render(strings.Repeat("─", rD)+"╮")
+	bot := bSt.Render("╰" + strings.Repeat("─", innerW) + "╯")
+	empty := bSt.Render("│") + strings.Repeat(" ", innerW) + bSt.Render("│")
+
+	msg := "  your join request was rejected"
+	line1 := bSt.Render("│") + bSt.Render(msg) + strings.Repeat(" ", innerW-len(msg)) + bSt.Render("│")
+	hint := "  press Ctrl+C to exit"
+	line2 := bSt.Render("│") + mutSt.Render(hint) + strings.Repeat(" ", innerW-len(hint)) + bSt.Render("│")
+
+	box := strings.Join([]string{top, empty, line1, line2, empty, bot}, "\n")
+	pad := (m.height - 6) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat("\n", pad) + lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(box)
+}
+
+// approvalTick drives the member-side waiting animation.
+func approvalTick() tea.Cmd {
+	return tea.Tick(350*time.Millisecond, func(_ time.Time) tea.Msg {
+		return approvalTickMsg{}
+	})
+}
 
 func (m *Model) injectLocalMessages(lines []string) {
 	now := time.Now()

@@ -17,6 +17,12 @@ const (
 	MsgMemberJoin  MessageType = "member_join"
 	MsgMemberLeave MessageType = "member_leave"
 	MsgError       MessageType = "error"
+
+	// join approval flow
+	MsgJoinRequest MessageType = "join_request" // server → admin: someone wants to join
+	MsgJoinApprove MessageType = "join_approve" // admin → server: allow pending user
+	MsgJoinReject  MessageType = "join_reject"  // admin → server: deny pending user
+	MsgJoinPending MessageType = "join_pending" // server → pending client: waiting for approval
 )
 
 type TaskStatus string
@@ -108,4 +114,16 @@ type MemberEventPayload struct {
 
 type ErrorPayload struct {
 	Message string `json:"message"`
+}
+
+type JoinRequestPayload struct {
+	Username string `json:"username"`
+}
+
+type JoinApprovePayload struct {
+	Username string `json:"username"`
+}
+
+type JoinRejectPayload struct {
+	Username string `json:"username"`
 }

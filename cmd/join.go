@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -38,10 +40,34 @@ func init() {
 	_ = joinCmd.MarkFlagRequired("name")
 }
 
+func joinConnectError(host string, err error) error {
+	msg := err.Error()
+	var hint string
+	switch {
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") ||
+		strings.Contains(msg, "did not properly respond") || strings.Contains(msg, "connectex"):
+		hint = "Connection timed out — the server machine's firewall is likely blocking port 8080.\n\n" +
+			"  On macOS (server):  System Settings → Network → Firewall → allow wert, or run:\n" +
+			"    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $(which wert)\n\n" +
+			"  On Linux (server):  sudo ufw allow 8080/tcp\n\n" +
+			"  Also verify you can ping " + host + " from this machine."
+	case strings.Contains(msg, "connection refused"):
+		hint = "Connection refused — is the server running?\n" +
+			"  Start it with:  wert serve --name <admin> --port 8080"
+	case strings.Contains(msg, "no such host") || strings.Contains(msg, "no route"):
+		h, _, _ := net.SplitHostPort(host)
+		hint = "Cannot reach " + h + " — check that both machines are on the same network\n" +
+			"  and that the IP shown by 'wert serve' matches what you typed."
+	default:
+		return fmt.Errorf("cannot connect to %s: %w", host, err)
+	}
+	return fmt.Errorf("cannot connect to %s\n\n  %s", host, hint)
+}
+
 func runJoin(cmd *cobra.Command, args []string) error {
 	cl, err := client.Connect(joinHost, joinName, joinToken)
 	if err != nil {
-		return fmt.Errorf("cannot connect to %s: %w", joinHost, err)
+		return joinConnectError(joinHost, err)
 	}
 
 	ghClient := gh.New(joinGHToken, joinGHOrg)
@@ -50,6 +76,9 @@ func runJoin(cmd *cobra.Command, args []string) error {
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+	if tui.UpdateRequested {
+		SelfUpdateAndRelaunch()
 	}
 	return nil
 }

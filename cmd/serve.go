@@ -45,10 +45,9 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	// ensure admin always gets admin role even when no --token flag is passed
-	if serveToken == "" {
-		serveToken = uuid.New().String()
-	}
+	// adminSecret is an internal UUID only the serve user knows — grants admin role.
+	// serveToken (--token flag) is the join password members must provide to connect.
+	adminSecret := uuid.New().String()
 	addr := "0.0.0.0:" + servePort
 
 	localIPs := server.LocalIPs()
@@ -65,13 +64,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	fmt.Println()
+	fmt.Println("  firewall: make sure port " + servePort + " is allowed for incoming connections")
+	fmt.Println("    macOS:  System Settings → Network → Firewall → add wert")
+	fmt.Println("    Linux:  sudo ufw allow " + servePort + "/tcp")
+	fmt.Println()
 
-	srv := server.New(addr, serveDataFile, serveToken)
+	srv := server.New(addr, serveDataFile, serveToken, adminSecret)
 	go srv.Start()
 	time.Sleep(150 * time.Millisecond)
 
 	host := "localhost:" + servePort
-	cl, err := client.Connect(host, serveName, serveToken)
+	// Admin connects with adminSecret so the server grants admin role.
+	cl, err := client.Connect(host, serveName, adminSecret)
 	if err != nil {
 		return fmt.Errorf("failed to connect to own server: %w", err)
 	}
@@ -87,6 +91,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+	if tui.UpdateRequested {
+		SelfUpdateAndRelaunch()
 	}
 	return nil
 }

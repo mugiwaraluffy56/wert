@@ -16,12 +16,14 @@ type Store struct {
 	tasks    map[string]*protocol.Task
 	messages []*protocol.ChatMessage
 	members  map[string]*protocol.Member
+	approved map[string]bool
 	dataFile string
 }
 
 type diskData struct {
-	Tasks    []*protocol.Task        `json:"tasks"`
-	Messages []*protocol.ChatMessage `json:"messages"`
+	Tasks         []*protocol.Task        `json:"tasks"`
+	Messages      []*protocol.ChatMessage `json:"messages"`
+	ApprovedUsers []string               `json:"approved_users,omitempty"`
 }
 
 func NewStore(dataFile string) *Store {
@@ -29,6 +31,7 @@ func NewStore(dataFile string) *Store {
 		tasks:    make(map[string]*protocol.Task),
 		messages: make([]*protocol.ChatMessage, 0),
 		members:  make(map[string]*protocol.Member),
+		approved: make(map[string]bool),
 		dataFile: dataFile,
 	}
 	s.load()
@@ -50,6 +53,9 @@ func (s *Store) load() {
 	if dd.Messages != nil {
 		s.messages = dd.Messages
 	}
+	for _, u := range dd.ApprovedUsers {
+		s.approved[u] = true
+	}
 }
 
 func (s *Store) persist() {
@@ -61,7 +67,11 @@ func (s *Store) persist() {
 	if len(msgs) > 1000 {
 		msgs = msgs[len(msgs)-1000:]
 	}
-	dd := diskData{Tasks: tasks, Messages: msgs}
+	approved := make([]string, 0, len(s.approved))
+	for u := range s.approved {
+		approved = append(approved, u)
+	}
+	dd := diskData{Tasks: tasks, Messages: msgs, ApprovedUsers: approved}
 	data, err := json.MarshalIndent(dd, "", "  ")
 	if err != nil {
 		return
@@ -186,6 +196,19 @@ func (s *Store) SetOnline(username, role string, online bool) {
 			Online:   online,
 		}
 	}
+}
+
+func (s *Store) IsApproved(username string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.approved[username]
+}
+
+func (s *Store) ApproveUser(username string) {
+	s.mu.Lock()
+	s.approved[username] = true
+	s.mu.Unlock()
+	go s.persist()
 }
 
 func (s *Store) GetMembers() []*protocol.Member {

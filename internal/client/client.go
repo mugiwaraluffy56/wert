@@ -134,6 +134,20 @@ func (c *Client) SendTaskUpdate(taskIDPrefix string, status protocol.TaskStatus)
 	}
 }
 
+func (c *Client) SendJoinApprove(username string) {
+	data, err := protocol.NewEnvelope(protocol.MsgJoinApprove, protocol.JoinApprovePayload{Username: username})
+	if err == nil {
+		c.Send <- data
+	}
+}
+
+func (c *Client) SendJoinReject(username string) {
+	data, err := protocol.NewEnvelope(protocol.MsgJoinReject, protocol.JoinRejectPayload{Username: username})
+	if err == nil {
+		c.Send <- data
+	}
+}
+
 func (c *Client) SendTaskDelete(taskIDPrefix string) {
 	data, err := protocol.NewEnvelope(protocol.MsgTaskDelete, protocol.TaskDeletePayload{
 		TaskID: taskIDPrefix,

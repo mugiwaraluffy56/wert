@@ -22,9 +22,9 @@ type Server struct {
 	addr string
 }
 
-func New(addr, dataFile, adminToken string) *Server {
+func New(addr, dataFile, joinToken, adminSecret string) *Server {
 	store := NewStore(dataFile)
-	hub := NewHub(store, adminToken)
+	hub := NewHub(store, joinToken, adminSecret)
 	s := &Server{hub: hub, mux: http.NewServeMux(), addr: addr}
 	s.routes()
 	return s

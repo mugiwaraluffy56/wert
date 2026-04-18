@@ -70,7 +70,7 @@ jobs:
         run: |
           mkdir -p dist
           go build \
-            -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -ldflags="-s -w -X wert/internal/version.Version=${{ steps.version.outputs.version }}" \
             -o dist/wert-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} .
 
       - name: Upload artifact
