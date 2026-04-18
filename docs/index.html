@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wert — docs</title>
+<style>
+  :root {
+    --red:      #E53935;
+    --red-dark: #B71C1C;
+    --red-dim:  #EF9A9A;
+    --green:    #43A047;
+    --muted:    #757575;
+    --bg:       #0D0D0D;
+    --bg2:      #141414;
+    --bg3:      #1A1A1A;
+    --border:   #2A2A2A;
+    --fg:       #F5F5F5;
+    --fg2:      #BDBDBD;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg);
+    color: var(--fg);
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  nav {
+    width: 240px;
+    min-width: 240px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .nav-logo {
+    padding: 0 24px 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .nav-logo .wordmark {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--red);
+    letter-spacing: 0.08em;
+  }
+  .nav-logo .tagline {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .nav-section-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 12px 24px 6px;
+  }
+  nav a {
+    display: block;
+    padding: 7px 24px;
+    font-size: 13px;
+    color: var(--fg2);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  nav a:hover, nav a.active {
+    color: var(--fg);
+    border-left-color: var(--red);
+    background: var(--bg3);
+  }
+  nav a.active { color: var(--red-dim); font-weight: 600; }
+
+  /* ── Main content ── */
+  main {
+    flex: 1;
+    max-width: 820px;
+    padding: 56px 48px 80px;
+    overflow-y: auto;
+  }
+
+  /* ── Sections ── */
+  section {
+    display: none;
+    animation: fadein 0.18s ease;
+  }
+  section.active { display: block; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--fg);
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 36px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--red-dim);
+    margin: 36px 0 12px;
+  }
+  h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+    margin: 24px 0 8px;
+  }
+  p { font-size: 14px; color: var(--fg2); line-height: 1.75; margin-bottom: 12px; }
+  ul, ol { padding-left: 20px; margin-bottom: 12px; }
+  li { font-size: 14px; color: var(--fg2); line-height: 1.8; }
+  li strong { color: var(--fg); }
+
+  code {
+    font-family: inherit;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 12.5px;
+    color: var(--red-dim);
+  }
+  pre {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin: 12px 0 20px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--fg2);
+  }
+  pre .c  { color: var(--muted); }
+  pre .k  { color: var(--red-dim); }
+  pre .s  { color: var(--green); }
+  pre .f  { color: #82B1FF; }
+
+  /* ── Key/cmd badges ── */
+  .kbd {
+    display: inline-block;
+    background: var(--bg3);
+    border: 1px solid #3A3A3A;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 12px;
+    color: var(--fg);
+    font-family: inherit;
+    vertical-align: middle;
+  }
+  .cmd-badge {
+    display: inline-block;
+    background: #1A0000;
+    border: 1px solid var(--red-dark);
+    border-radius: 4px;
+    padding: 1px 8px;
+    font-size: 12px;
+    color: var(--red-dim);
+    font-family: inherit;
+    vertical-align: middle;
+  }
+
+  /* ── Table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 24px;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  td {
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    color: var(--fg2);
+    line-height: 1.6;
+    vertical-align: top;
+  }
+  td code { font-size: 12px; }
+  tr:hover td { background: var(--bg3); }
+
+  /* ── Callout ── */
+  .callout {
+    display: flex;
+    gap: 12px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--red);
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin: 16px 0;
+    font-size: 13px;
+    color: var(--fg2);
+    line-height: 1.65;
+  }
+  .callout.green { border-left-color: var(--green); }
+  .callout-icon { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
+
+  /* ── Screen diagram ── */
+  .screen-diagram {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin: 14px 0 20px;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .screen-diagram .hl { color: var(--fg); }
+  .screen-diagram .red { color: var(--red-dim); }
+  .screen-diagram .grn { color: #66BB6A; }
+
+  /* ── Logo ── */
+  .logo-block {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--red);
+    font-weight: 700;
+    white-space: pre;
+    margin: 0 0 28px;
+    text-shadow: none;
+    overflow-x: auto;
+  }
+
+  /* ── Step list ── */
+  .steps { list-style: none; padding: 0; margin: 16px 0 24px; }
+  .steps li {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    color: var(--fg2);
+    line-height: 1.7;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--red-dark);
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+  }
+  .steps li strong { color: var(--fg); }
+
+  /* ── Scope chips ── */
+  .scope {
+    display: inline-block;
+    background: #1A1A2A;
+    border: 1px solid #3A3A6A;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: #90CAF9;
+    font-family: inherit;
+    vertical-align: middle;
+  }
+  .scope.required { background: #1A0A0A; border-color: var(--red-dark); color: var(--red-dim); }
+
+  /* ── Warning callout ── */
+  .callout.warn { border-left-color: #FDD835; }
+  .callout.warn .callout-icon { color: #FDD835; }
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div class="nav-logo">
+    <div class="wordmark">wert</div>
+    <div class="tagline">LAN team collaboration tool</div>
+  </div>
+
+  <div class="nav-section-label">Overview</div>
+  <a href="#" data-page="intro" class="active">Introduction</a>
+  <a href="#" data-page="install">Installation</a>
+
+  <div class="nav-section-label">Running wert</div>
+  <a href="#" data-page="serve">wert serve (admin)</a>
+  <a href="#" data-page="join">wert join (member)</a>
+  <a href="#" data-page="mcp">MCP server</a>
+
+  <div class="nav-section-label">TUI Screens</div>
+  <a href="#" data-page="nav">Navigation</a>
+  <a href="#" data-page="home">Home</a>
+  <a href="#" data-page="chat">Chat</a>
+  <a href="#" data-page="tasks">Tasks</a>
+  <a href="#" data-page="github">GitHub</a>
+  <a href="#" data-page="workstation">Workstation</a>
+  <a href="#" data-page="members">Members</a>
+
+  <div class="nav-section-label">Features</div>
+  <a href="#" data-page="cmdline">Cmdline</a>
+  <a href="#" data-page="splits">Split panes</a>
+  <a href="#" data-page="commands">Command reference</a>
+
+  <div class="nav-section-label">Guides</div>
+  <a href="#" data-page="gh-setup">GitHub setup guide</a>
+</nav>
+
+<main>
+
+<!-- ── INTRO ── -->
+<section id="page-intro" class="active">
+  <div class="logo-block">██╗    ██╗███████╗██████╗ ████████╗
+██║    ██║██╔════╝██╔══██╗╚══██╔══╝
+██║ █╗ ██║█████╗  ██████╔╝   ██║
+██║███╗██║██╔══╝  ██╔══██╗   ██║
+╚███╔███╔╝███████╗██║  ██║   ██║
+ ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝   ╚═╝  </div>
+  <p class="subtitle">A terminal-native team collaboration tool for your local network. Tasks, chat, GitHub activity — all in one TUI.</p>
+
+  <h2>What is wert?</h2>
+  <p>wert is a CLI tool that lets a small team share a live workspace over a LAN. One person runs the server (<strong>admin</strong>), everyone else joins as a <strong>member</strong>. You get a full-screen terminal UI with real-time task tracking, team chat, and optional GitHub integration — no cloud required.</p>
+
+  <div class="callout">
+    <span class="callout-icon">⚡</span>
+    <span>Everything happens over WebSocket on your local network. No accounts, no SaaS, no internet required (except for optional GitHub integration).</span>
+  </div>
+
+  <h2>Architecture</h2>
+  <div class="screen-diagram"><span class="hl">┌─────────────────────────────────────────┐
+│             wert serve                  │  ← admin machine
+│  ┌──────────┐  ┌───────────────────────┐│
+│  │ HTTP/WS  │  │  Store (JSON on disk) ││
+│  │ :8080    │  │  tasks + messages     ││
+│  └──────────┘  └───────────────────────┘│
+└──────────────────┬──────────────────────┘
+                   │ WebSocket
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+  wert join    wert join    wert mcp
+  (member)     (member)     (Claude)</span></div>
+
+  <h2>Key concepts</h2>
+  <ul>
+    <li><strong>Admin</strong> — can create, assign, and delete tasks. Runs the server.</li>
+    <li><strong>Member</strong> — can update status on their own tasks, chat with the team.</li>
+    <li><strong>MCP server</strong> — lets Claude manage tasks and send messages via the REST API.</li>
+    <li><strong>Cmdline</strong> — Vim-style floating command bar activated with <span class="kbd">Shift+;</span>.</li>
+  </ul>
+</section>
+
+<!-- ── INSTALL ── -->
+<section id="page-install">
+  <h1>Installation</h1>
+  <p class="subtitle">Build from source — requires Go 1.21+.</p>
+
+  <h2>Build</h2>
+  <pre><span class="f">git</span> clone https://github.com/your-org/wert
+<span class="f">cd</span> wert
+<span class="f">go</span> build -o wert .
+
+<span class="c"># install to PATH</span>
+<span class="f">cp</span> wert /usr/local/bin/wert</pre>
+
+  <h2>Cross-compile</h2>
+  <pre><span class="f">make</span> cross-build   <span class="c"># linux + darwin × amd64/arm64</span></pre>
+
+  <h2>Flags overview</h2>
+  <table>
+    <tr><th>command</th><th>flag</th><th>default</th><th>description</th></tr>
+    <tr><td rowspan="4"><code>wert serve</code></td><td><code>--name</code></td><td><em>required</em></td><td>your display name</td></tr>
+    <tr><td><code>--port</code></td><td>8080</td><td>server listen port</td></tr>
+    <tr><td><code>--token</code></td><td><em>none</em></td><td>admin token (optional)</td></tr>
+    <tr><td><code>--data</code></td><td>wert-data.json</td><td>persistence file</td></tr>
+    <tr><td rowspan="3"><code>wert join</code></td><td><code>--host</code></td><td><em>required</em></td><td>server address e.g. <code>192.168.1.5:8080</code></td></tr>
+    <tr><td><code>--name</code></td><td><em>required</em></td><td>your display name</td></tr>
+    <tr><td><code>--token</code></td><td><em>none</em></td><td>admin token (to get admin role)</td></tr>
+    <tr><td><code>wert mcp</code></td><td><code>--server</code></td><td><em>required</em></td><td>REST API base URL e.g. <code>http://192.168.1.5:8080</code></td></tr>
+  </table>
+</section>
+
+<!-- ── SERVE ── -->
+<section id="page-serve">
+  <h1>wert serve</h1>
+  <p class="subtitle">Start the server and open the admin TUI. Run this on the host machine.</p>
+
+  <h2>Basic usage</h2>
+  <pre><span class="f">wert</span> serve <span class="k">--name</span> alice</pre>
+
+  <h2>With admin token</h2>
+  <p>If you set a token, only people who pass it with <code>--token</code> get the admin role. Without a token, the server trusts the first WebSocket connection as admin.</p>
+  <pre><span class="f">wert</span> serve <span class="k">--name</span> alice <span class="k">--token</span> secret123 <span class="k">--port</span> 9000</pre>
+
+  <h2>Data persistence</h2>
+  <p>The server writes tasks and chat history to a JSON file after every mutation. Members and the server address are in-memory only.</p>
+  <pre><span class="f">wert</span> serve <span class="k">--name</span> alice <span class="k">--data</span> /var/wert/data.json</pre>
+
+  <div class="callout green">
+    <span class="callout-icon">✓</span>
+    <span>The server prints its local IP addresses on startup so team members know what address to use with <code>wert join --host</code>.</span>
+  </div>
+
+  <h2>REST API</h2>
+  <p>The server exposes a REST API at the same port, used by the MCP server:</p>
+  <table>
+    <tr><th>method</th><th>path</th><th>description</th></tr>
+    <tr><td><code>GET</code></td><td><code>/api/members</code></td><td>list connected members</td></tr>
+    <tr><td><code>GET/POST</code></td><td><code>/api/tasks</code></td><td>list or create tasks</td></tr>
+    <tr><td><code>PUT/DELETE</code></td><td><code>/api/tasks/:id</code></td><td>update status or delete</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/messages</code></td><td>send a chat message</td></tr>
+    <tr><td><code>GET</code></td><td><code>/health</code></td><td>health check</td></tr>
+  </table>
+</section>
+
+<!-- ── JOIN ── -->
+<section id="page-join">
+  <h1>wert join</h1>
+  <p class="subtitle">Connect to an existing server as a team member.</p>
+
+  <h2>Basic usage</h2>
+  <pre><span class="f">wert</span> join <span class="k">--host</span> 192.168.1.5:8080 <span class="k">--name</span> bob</pre>
+
+  <h2>Join as admin</h2>
+  <pre><span class="f">wert</span> join <span class="k">--host</span> 192.168.1.5:8080 <span class="k">--name</span> bob <span class="k">--token</span> secret123</pre>
+
+  <h2>Reconnection</h2>
+  <p>If the connection drops, wert automatically attempts to reconnect up to 15 times. The status bar shows reconnection progress. You don't lose your TUI state.</p>
+
+  <h2>Roles</h2>
+  <table>
+    <tr><th>role</th><th>what you can do</th></tr>
+    <tr><td><strong>admin</strong></td><td>create tasks, assign tasks to others, delete tasks, all member actions</td></tr>
+    <tr><td><strong>member</strong></td><td>update status on your own assigned tasks, send chat messages</td></tr>
+  </table>
+</section>
+
+<!-- ── MCP ── -->
+<section id="page-mcp">
+  <h1>MCP server</h1>
+  <p class="subtitle">Let Claude manage your team's tasks and send messages.</p>
+
+  <h2>Start the MCP server</h2>
+  <pre><span class="f">wert</span> mcp <span class="k">--server</span> http://192.168.1.5:8080</pre>
+
+  <p>Configure it in your Claude Desktop <code>config.json</code>:</p>
+  <pre>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"wert"</span>: {
+      <span class="s">"command"</span>: <span class="s">"wert"</span>,
+      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://192.168.1.5:8080"</span>]
+    }
+  }
+}</pre>
+
+  <h2>Available tools</h2>
+  <table>
+    <tr><th>tool</th><th>description</th></tr>
+    <tr><td><code>list_tasks</code></td><td>get all tasks, optionally filtered by assignee or status</td></tr>
+    <tr><td><code>list_members</code></td><td>get all connected members and their online status</td></tr>
+    <tr><td><code>create_task</code></td><td>create a new task with title, description, assignee, priority, due date</td></tr>
+    <tr><td><code>update_task</code></td><td>change a task's status (todo / in_progress / done / blocked)</td></tr>
+    <tr><td><code>delete_task</code></td><td>delete a task by ID prefix</td></tr>
+    <tr><td><code>send_message</code></td><td>send a chat message to the team</td></tr>
+    <tr><td><code>get_dashboard</code></td><td>get a full summary: members, tasks, recent messages</td></tr>
+  </table>
+
+  <div class="callout">
+    <span class="callout-icon">ℹ</span>
+    <span>The MCP server talks to the REST API — no WebSocket needed. It does not receive real-time updates; use <code>get_dashboard</code> to fetch current state.</span>
+  </div>
+</section>
+
+<!-- ── NAVIGATION ── -->
+<section id="page-nav">
+  <h1>Navigation</h1>
+  <p class="subtitle">Move between screens with number keys, tab, or the cmdline.</p>
+
+  <h2>Screen numbers</h2>
+  <table>
+    <tr><th>key</th><th>screen</th></tr>
+    <tr><td><span class="kbd">1</span></td><td>Home</td></tr>
+    <tr><td><span class="kbd">2</span></td><td>Chat</td></tr>
+    <tr><td><span class="kbd">3</span></td><td>Tasks</td></tr>
+    <tr><td><span class="kbd">4</span></td><td>GitHub</td></tr>
+    <tr><td><span class="kbd">5</span></td><td>Workstation</td></tr>
+    <tr><td><span class="kbd">6</span></td><td>Members</td></tr>
+  </table>
+
+  <h2>Keyboard shortcuts</h2>
+  <table>
+    <tr><th>key</th><th>action</th></tr>
+    <tr><td><span class="kbd">Esc</span></td><td>go back to Home</td></tr>
+    <tr><td><span class="kbd">q</span></td><td>go back to Home (when input is empty)</td></tr>
+    <tr><td><span class="kbd">Tab</span></td><td>cycle to next screen</td></tr>
+    <tr><td><span class="kbd">[</span> / <span class="kbd">]</span></td><td>previous / next sub-tab (Tasks filters, GitHub tabs)</td></tr>
+    <tr><td><span class="kbd">↑</span> <span class="kbd">↓</span> <span class="kbd">PgUp</span> <span class="kbd">PgDn</span></td><td>scroll current screen</td></tr>
+    <tr><td><span class="kbd">Shift+;</span></td><td>open / close cmdline</td></tr>
+    <tr><td><span class="kbd">Ctrl+C</span> / <span class="kbd">Ctrl+Q</span></td><td>quit</td></tr>
+  </table>
+
+  <h2>Header</h2>
+  <p>The top bar always shows your username, role, online member count, and unread chat badge. The current screen name is shown next to "wert".</p>
+</section>
+
+<!-- ── HOME ── -->
+<section id="page-home">
+  <h1>Home screen</h1>
+  <p class="subtitle">Your landing screen with stats and quick navigation menu.</p>
+
+  <p>The Home screen shows the wert logo, a live summary (open tasks, done tasks, online members), and a navigation menu. It's purely informational — no input box.</p>
+
+  <h2>Getting around from Home</h2>
+  <p>Press <span class="kbd">2</span>–<span class="kbd">6</span> to jump directly to a screen, or open the cmdline with <span class="kbd">Shift+;</span> and type a screen number.</p>
+
+  <div class="callout green">
+    <span class="callout-icon">✓</span>
+    <span>The stats on Home update live as tasks are completed and members connect/disconnect.</span>
+  </div>
+</section>
+
+<!-- ── CHAT ── -->
+<section id="page-chat">
+  <h1>Chat</h1>
+  <p class="subtitle">Real-time team chat with @mentions and message history.</p>
+
+  <h2>Sending messages</h2>
+  <p>Type in the input box at the bottom and press <span class="kbd">Enter</span>. Messages are broadcast to everyone connected. The last 100 messages are persisted on the server.</p>
+
+  <h2>@mentions</h2>
+  <p>Include <code>@username</code> in a message to mention someone. They'll see a notification badge in the status bar even if they're on a different screen.</p>
+
+  <h2>Unread badge</h2>
+  <p>When you're on any screen other than Chat and a new message arrives, an unread count badge appears in the header next to "2:Chat". It clears when you visit Chat.</p>
+
+  <h2>Sending from Workstation</h2>
+  <p>The Workstation screen has its own message input at the bottom. Messages sent there go to the same shared chat channel.</p>
+</section>
+
+<!-- ── TASKS ── -->
+<section id="page-tasks">
+  <h1>Tasks</h1>
+  <p class="subtitle">Create, assign, track, and update tasks across the team.</p>
+
+  <h2>Task statuses</h2>
+  <table>
+    <tr><th>status</th><th>command</th><th>colour</th></tr>
+    <tr><td>todo</td><td><code>/todo &lt;id&gt;</code></td><td style="color:#E53935">red</td></tr>
+    <tr><td>in_progress</td><td><code>/wip &lt;id&gt;</code></td><td style="color:#43A047">green</td></tr>
+    <tr><td>done</td><td><code>/done &lt;id&gt;</code></td><td style="color:#A5D6A7">dim green</td></tr>
+    <tr><td>blocked</td><td><code>/blocked &lt;id&gt;</code></td><td style="color:#EF9A9A">dim red</td></tr>
+  </table>
+
+  <h2>Filters</h2>
+  <p>Use <span class="kbd">[</span> and <span class="kbd">]</span> to cycle through filters: <strong>All / Todo / In Progress / Done / Blocked</strong>.</p>
+
+  <h2>Creating tasks (admin)</h2>
+  <pre><span class="c"># basic</span>
+/assign @bob "Fix login bug"
+
+<span class="c"># with description and priority</span>
+/assign @alice "Deploy to staging" "Run deploy.sh on prod box" high
+
+<span class="c"># with due date</span>
+/assign @bob "Write release notes" "" medium due:2025-01-31</pre>
+
+  <h2>Updating tasks</h2>
+  <p>Use the short 8-character ID prefix shown in the task list:</p>
+  <pre>/wip a1b2c3d4
+/done a1b2c3d4
+/blocked a1b2c3d4</pre>
+
+  <h2>Deleting tasks (admin)</h2>
+  <pre>/delete a1b2c3d4</pre>
+
+  <h2>Notification</h2>
+  <p>When a new task is assigned to you, a notification appears in the status bar regardless of which screen you're on.</p>
+</section>
+
+<!-- ── GITHUB ── -->
+<section id="page-github">
+  <h1>GitHub</h1>
+  <p class="subtitle">View your org's repos, open PRs, and open issues — live from the GitHub API.</p>
+
+  <h2>Quick setup</h2>
+  <p>You need a <strong>Classic PAT</strong> with two scopes. See the <a href="#" data-page="gh-setup" style="color:var(--red-dim)">GitHub setup guide →</a> for a full step-by-step walkthrough.</p>
+  <pre>/github setup --token ghp_xxxxxxxxxxxx --org your-org-or-username</pre>
+
+  <h2>Refresh</h2>
+  <pre>/github refresh</pre>
+
+  <h2>Sub-tabs</h2>
+  <p>Press <span class="kbd">[</span> / <span class="kbd">]</span> to switch between <strong>Overview</strong>, <strong>Pull Requests</strong>, and <strong>Issues</strong>.</p>
+
+  <h2>Personal accounts</h2>
+  <p>wert automatically falls back from the <code>org:</code> search qualifier to <code>user:</code>, and then to a per-repo search if needed. Personal accounts and orgs both work.</p>
+
+  <div class="callout">
+    <span class="callout-icon">ℹ</span>
+    <span>GitHub data is fetched on demand and cached in-memory. It's not persisted between restarts.</span>
+  </div>
+</section>
+
+<!-- ── WORKSTATION ── -->
+<section id="page-workstation">
+  <h1>Workstation</h1>
+  <p class="subtitle">A dedicated split-pane workspace with a message input. Screen 5.</p>
+
+  <h2>Default layout</h2>
+  <p>By default, Workstation shows Tasks on the left and Chat on the right, with a message input at the bottom. Navigate here with <span class="kbd">5</span> or <code>:5</code>.</p>
+
+  <div class="screen-diagram"><span class="hl">┌──────────────────┬──────────────────┐
+│  Tasks           │  Chat            │
+│  ─────────────── │  ─────────────── │
+│                  │                  │
+│  [TODO] Fix bug  │  alice: shipped  │
+│  [WIP]  Deploy   │  bob: nice       │
+│                  │                  │
+└──────────────────┴──────────────────┘
+┌─────────────────────────────────────┐
+│ ▌                                   │  ← message input
+└─────────────────────────────────────┘</span></div>
+
+  <h2>Split pane commands</h2>
+  <p>Open the cmdline (<span class="kbd">Shift+;</span>) and use <code>sp</code> to set a custom layout:</p>
+  <table>
+    <tr><th>command</th><th>result</th></tr>
+    <tr><td><code>sp h3</code></td><td>full pane showing Tasks</td></tr>
+    <tr><td><code>sp v2</code></td><td>current screen top, Chat bottom</td></tr>
+    <tr><td><code>sp h3 h2</code></td><td>Tasks left, Chat right</td></tr>
+    <tr><td><code>sp v3 h2</code></td><td>Tasks top, then Chat left + GitHub right in bottom half</td></tr>
+    <tr><td><code>cl</code></td><td>reset to default Tasks / Chat layout</td></tr>
+  </table>
+
+  <h3>Screen numbers for panes</h3>
+  <table>
+    <tr><th>number</th><th>content</th></tr>
+    <tr><td><code>1</code></td><td>Home</td></tr>
+    <tr><td><code>2</code></td><td>Chat</td></tr>
+    <tr><td><code>3</code></td><td>Tasks</td></tr>
+    <tr><td><code>4</code></td><td>GitHub</td></tr>
+    <tr><td><code>6</code></td><td>Members</td></tr>
+  </table>
+
+  <h2>Message input</h2>
+  <p>The input box at the bottom of Workstation sends messages to the shared chat channel — same as the Chat screen's input.</p>
+</section>
+
+<!-- ── MEMBERS ── -->
+<section id="page-members">
+  <h1>Members</h1>
+  <p class="subtitle">See who's on the team, their role, and task counts. Screen 6.</p>
+
+  <p>Navigate here with <span class="kbd">6</span> or <code>:6</code>. Each row shows:</p>
+  <ul>
+    <li><strong>Online indicator</strong> — green <code>*</code> when connected, grey <code>o</code> when offline</li>
+    <li><strong>Username and role</strong> — admin shown in red</li>
+    <li><strong>Task counts</strong> — open and done tasks assigned to that member</li>
+  </ul>
+
+  <div class="callout">
+    <span class="callout-icon">ℹ</span>
+    <span>Members appear here once they've connected at least once. Offline members stay visible with their last-seen task stats.</span>
+  </div>
+
+  <h2>In Workstation panes</h2>
+  <p>You can show the Members view as a pane inside Workstation using screen number <code>6</code>:</p>
+  <pre>:sp h6    <span class="c"># members pane, full width</span>
+:sp h3 h6 <span class="c"># tasks left, members right</span></pre>
+</section>
+
+<!-- ── CMDLINE ── -->
+<section id="page-cmdline">
+  <h1>Cmdline</h1>
+  <p class="subtitle">A Vim-style floating command bar accessible from every screen.</p>
+
+  <h2>Activating</h2>
+  <p>Press <span class="kbd">Shift+;</span> (i.e. <code>:</code>) from any screen. The cmdline appears as a centered floating box overlaid on the current content. Press <span class="kbd">Shift+;</span> again or <span class="kbd">Esc</span> to dismiss it.</p>
+
+  <div class="screen-diagram"><span class="red">╭──────────────── Cmdline ────────────────╮
+│  ❯ 3▌                                   │
+╰─────────────────────────────────────────╯</span></div>
+
+  <h2>Navigation commands</h2>
+  <table>
+    <tr><th>command</th><th>action</th></tr>
+    <tr><td><code>1</code> – <code>6</code></td><td>switch to that screen</td></tr>
+    <tr><td><code>q</code> / <code>q!</code> / <code>quit</code></td><td>quit wert</td></tr>
+    <tr><td><code>docs</code></td><td>open the wert documentation in your browser</td></tr>
+  </table>
+
+  <h2>Workstation commands</h2>
+  <table>
+    <tr><th>command</th><th>action</th></tr>
+    <tr><td><code>sp &lt;dir&gt;&lt;n&gt; [&lt;dir&gt;&lt;n&gt;]</code></td><td>open Workstation with a split layout</td></tr>
+    <tr><td><code>cl</code> / <code>close</code></td><td>reset Workstation to default layout</td></tr>
+  </table>
+
+  <h2>Split command syntax</h2>
+  <p><code>v</code> = vertical split (top / bottom), <code>h</code> = horizontal split (left / right), number = screen.</p>
+  <pre>sp v3 h2   <span class="c"># tasks top, chat left + github right (bottom)</span>
+sp h3      <span class="c"># tasks only, full pane</span>
+sp h6 h3   <span class="c"># members left, tasks right</span></pre>
+</section>
+
+<!-- ── SPLITS ── -->
+<section id="page-splits">
+  <h1>Split panes</h1>
+  <p class="subtitle">Arrange multiple screen views side-by-side inside the Workstation.</p>
+
+  <h2>How it works</h2>
+  <p>The <code>sp</code> command builds a binary pane tree. Each argument adds a split:</p>
+  <ul>
+    <li>First arg — splits the full area. Direction + screen number for the new pane.</li>
+    <li>Second arg — further splits the second leaf of the first split.</li>
+  </ul>
+
+  <h2>Examples</h2>
+
+  <h3>sp h3 — Tasks, full width</h3>
+  <div class="screen-diagram"><span class="hl">┌───────────────────────────────────────┐
+│  Tasks                                │
+│                                       │
+└───────────────────────────────────────┘</span></div>
+
+  <h3>sp v2 — current top, Chat bottom</h3>
+  <div class="screen-diagram"><span class="hl">┌───────────────────────────────────────┐
+│  (current screen)                     │
+├───────────────────────────────────────┤
+│  Chat                                 │
+└───────────────────────────────────────┘</span></div>
+
+  <h3>sp h3 h2 — Tasks left, Chat right</h3>
+  <div class="screen-diagram"><span class="hl">┌──────────────────┬────────────────────┐
+│  Tasks           │  Chat              │
+│                  │                    │
+└──────────────────┴────────────────────┘</span></div>
+
+  <h3>sp v3 h2 — Tasks top, Chat/GitHub bottom</h3>
+  <div class="screen-diagram"><span class="hl">┌───────────────────────────────────────┐
+│  Tasks                                │
+├──────────────────┬────────────────────┤
+│  Chat            │  GitHub            │
+└──────────────────┴────────────────────┘</span></div>
+
+  <h2>Reset</h2>
+  <p>Type <code>:cl</code> in the cmdline to go back to the default Tasks + Chat layout.</p>
+</section>
+
+<!-- ── COMMANDS ── -->
+<section id="page-commands">
+  <h1>Command reference</h1>
+  <p class="subtitle">All slash commands and cmdline commands in one place.</p>
+
+  <h2>Slash commands (input box)</h2>
+  <table>
+    <tr><th>command</th><th>role</th><th>description</th></tr>
+    <tr><td><code>/help</code></td><td>all</td><td>show command reference in chat</td></tr>
+    <tr><td><code>/done &lt;id&gt;</code></td><td>all</td><td>mark task as done</td></tr>
+    <tr><td><code>/wip &lt;id&gt;</code></td><td>all</td><td>mark task as in progress</td></tr>
+    <tr><td><code>/blocked &lt;id&gt;</code></td><td>all</td><td>mark task as blocked</td></tr>
+    <tr><td><code>/todo &lt;id&gt;</code></td><td>all</td><td>reset task to todo</td></tr>
+    <tr><td><code>/members</code></td><td>all</td><td>show member list in chat</td></tr>
+    <tr><td><code>/assign @user "title" ["desc"] [priority] [due:YYYY-MM-DD]</code></td><td>admin</td><td>create and assign a task</td></tr>
+    <tr><td><code>/delete &lt;id&gt;</code></td><td>admin</td><td>delete a task</td></tr>
+    <tr><td><code>/github setup --token &lt;t&gt; --org &lt;o&gt;</code></td><td>all</td><td>configure GitHub integration</td></tr>
+    <tr><td><code>/github refresh</code></td><td>all</td><td>refresh GitHub data</td></tr>
+    <tr><td><code>/exit</code> / <code>/quit</code></td><td>all</td><td>quit wert</td></tr>
+  </table>
+
+  <h2>Cmdline commands (Shift+;)</h2>
+  <table>
+    <tr><th>command</th><th>description</th></tr>
+    <tr><td><code>1</code> – <code>6</code></td><td>navigate to screen</td></tr>
+    <tr><td><code>q</code> / <code>q!</code> / <code>quit</code></td><td>quit</td></tr>
+    <tr><td><code>docs</code></td><td>open documentation in browser</td></tr>
+    <tr><td><code>sp &lt;v|h&gt;&lt;n&gt; [&lt;v|h&gt;&lt;n&gt;]</code></td><td>open Workstation with split layout</td></tr>
+    <tr><td><code>cl</code> / <code>close</code></td><td>reset Workstation to default layout</td></tr>
+  </table>
+
+  <h2>Task priorities</h2>
+  <table>
+    <tr><th>value</th><th>display</th></tr>
+    <tr><td><code>high</code></td><td><span style="color:#E53935">^ high</span></td></tr>
+    <tr><td><code>medium</code> (default)</td><td><span style="color:#43A047">- med</span></td></tr>
+    <tr><td><code>low</code></td><td><span style="color:#757575">v low</span></td></tr>
+  </table>
+</section>
+
+<!-- ── GITHUB SETUP GUIDE ── -->
+<section id="page-gh-setup">
+  <h1>GitHub setup guide</h1>
+  <p class="subtitle">Step-by-step: create a Classic PAT with the right scopes so wert can read your org's repos, PRs, and issues.</p>
+
+  <div class="callout warn">
+    <span class="callout-icon">⚠</span>
+    <span><strong>Use a Classic token — not Fine-grained.</strong> Fine-grained PATs have very limited GitHub Search API support and require org admin approval. Classic tokens work out of the box.</span>
+  </div>
+
+  <h2>Step-by-step</h2>
+  <ol class="steps">
+    <li>
+      <span class="step-num">1</span>
+      <div>
+        <strong>Open GitHub in your browser.</strong> Make sure you're signed in to the account that is a member of your org.
+      </div>
+    </li>
+    <li>
+      <span class="step-num">2</span>
+      <div>
+        <strong>Go to token settings.</strong><br>
+        Click your profile photo (top-right) → <strong>Settings</strong> → scroll all the way to the bottom of the left sidebar → <strong>Developer settings</strong> → <strong>Personal access tokens</strong> → <strong>Tokens (classic)</strong>.
+      </div>
+    </li>
+    <li>
+      <span class="step-num">3</span>
+      <div>
+        <strong>Generate a new classic token.</strong><br>
+        Click <strong>Generate new token</strong> → <strong>Generate new token (classic)</strong>.<br>
+        GitHub may ask you to confirm your password.
+      </div>
+    </li>
+    <li>
+      <span class="step-num">4</span>
+      <div>
+        <strong>Fill in the token details.</strong>
+        <ul style="margin-top:8px">
+          <li><strong>Note:</strong> anything descriptive, e.g. <code>wert-local</code></li>
+          <li><strong>Expiration:</strong> set to 90 days or No expiration (your call)</li>
+        </ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-num">5</span>
+      <div>
+        <strong>Select exactly these two scopes:</strong>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px">
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:14px 16px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+              <span class="scope required">repo</span>
+              <span style="color:var(--red-dim);font-size:12px;font-weight:600">REQUIRED</span>
+            </div>
+            <p style="margin:0;font-size:13px">Full control of private repositories. This lets wert list your repos and read PR/issue data from private repos. Check the top-level <strong>repo</strong> checkbox — it automatically selects all sub-scopes (<code>repo:status</code>, <code>repo:deployment</code>, <code>public_repo</code>, <code>repo:invite</code>, <code>security_events</code>).</p>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:14px 16px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+              <span class="scope required">read:org</span>
+              <span style="color:var(--red-dim);font-size:12px;font-weight:600">REQUIRED</span>
+            </div>
+            <p style="margin:0;font-size:13px">Read org and team membership. This is what enables the GitHub Search API to accept <code>org:yourorg</code> as a search qualifier. Without this, you get a <strong>422 Validation Failed</strong> error even if you own the org. It's under the <strong>admin:org</strong> section — expand it and check only <strong>read:org</strong>.</p>
+          </div>
+        </div>
+        <div class="callout" style="margin-top:12px">
+          <span class="callout-icon">ℹ</span>
+          <span>You do <strong>not</strong> need <code>admin:org</code>, <code>write:org</code>, or any other scope. Just <code>repo</code> + <code>read:org</code>.</span>
+        </div>
+      </div>
+    </li>
+    <li>
+      <span class="step-num">6</span>
+      <div>
+        <strong>Click "Generate token" at the bottom of the page.</strong><br>
+        GitHub shows you the token <strong>exactly once</strong>. Copy it now — you cannot see it again.
+        <pre style="margin-top:10px">ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</pre>
+      </div>
+    </li>
+    <li>
+      <span class="step-num">7</span>
+      <div>
+        <strong>If your org uses SAML SSO — authorize the token.</strong><br>
+        Next to your newly created token in the list, click <strong>Configure SSO</strong> → <strong>Authorize</strong> next to your org name. If you skip this, GitHub will reject all API calls for that org even with the right scopes.
+        <div class="callout warn" style="margin-top:10px">
+          <span class="callout-icon">⚠</span>
+          <span>If you don't see a "Configure SSO" button, your org doesn't use SAML SSO — skip this step.</span>
+        </div>
+      </div>
+    </li>
+    <li>
+      <span class="step-num">8</span>
+      <div>
+        <strong>Connect wert to GitHub.</strong><br>
+        In the wert TUI, go to screen 4 (GitHub) or use the input on any screen:
+        <pre>/github setup --token ghp_xxxxxxxxxxxx --org your-org-name</pre>
+        <p style="margin-top:8px">The <code>--org</code> value is the <strong>org slug</strong> (the part after <code>github.com/</code>), not the display name. For personal accounts, use your GitHub username.</p>
+      </div>
+    </li>
+    <li>
+      <span class="step-num">9</span>
+      <div>
+        <strong>You're done.</strong> wert fetches your repos, open PRs, and open issues. Use <code>/github refresh</code> any time to reload the data.
+        <div class="callout green" style="margin-top:10px">
+          <span class="callout-icon">✓</span>
+          <span>wert automatically tries three search strategies: <code>org:</code> → <code>user:</code> → per-repo. So even if one approach fails for your setup, it falls through to the next.</span>
+        </div>
+      </div>
+    </li>
+  </ol>
+
+  <h2>Troubleshooting</h2>
+  <table>
+    <tr><th>error</th><th>cause</th><th>fix</th></tr>
+    <tr>
+      <td><code>422 Validation Failed</code></td>
+      <td>Token is missing <code>read:org</code> scope, or it's a Fine-grained PAT</td>
+      <td>Create a new <strong>Classic</strong> token with both <code>repo</code> and <code>read:org</code></td>
+    </tr>
+    <tr>
+      <td><code>401 Unauthorized</code></td>
+      <td>Token is invalid or expired</td>
+      <td>Generate a new token and run <code>/github setup</code> again</td>
+    </tr>
+    <tr>
+      <td><code>403 Forbidden</code></td>
+      <td>SAML SSO not authorized for this token</td>
+      <td>Go to token settings on GitHub → Configure SSO → Authorize your org</td>
+    </tr>
+    <tr>
+      <td><code>404</code> on repos but not PRs</td>
+      <td>Org name is wrong, or you used a user account name for an org</td>
+      <td>Double-check the slug in the GitHub URL (e.g. <code>github.com/<strong>your-org</strong></code>)</td>
+    </tr>
+    <tr>
+      <td>No PRs or issues shown</td>
+      <td>Your repos are private and the token has no <code>repo</code> scope</td>
+      <td>Re-create the token and check the <code>repo</code> checkbox</td>
+    </tr>
+  </table>
+</section>
+
+</main>
+
+<script>
+  const pages = document.querySelectorAll('section[id^="page-"]');
+  const links  = document.querySelectorAll('nav a[data-page]');
+
+  function show(id) {
+    pages.forEach(p => p.classList.toggle('active', p.id === 'page-' + id));
+    links.forEach(a => a.classList.toggle('active', a.dataset.page === id));
+    window.scrollTo(0, 0);
+  }
+
+  links.forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      show(a.dataset.page);
+      history.replaceState(null, '', '#' + a.dataset.page);
+    });
+  });
+
+  // restore from hash
+  const hash = location.hash.slice(1);
+  if (hash) show(hash);
+</script>
+
+</body>
+</html>

@@ -3,6 +3,8 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -22,14 +24,23 @@ import (
 type screenType int
 
 const (
-	scrHome    screenType = 0
-	scrChat    screenType = 1
-	scrTasks   screenType = 2
-	scrGitHub  screenType = 3
-	scrMembers screenType = 4
+	scrHome        screenType = 0
+	scrChat        screenType = 1
+	scrTasks       screenType = 2
+	scrGitHub      screenType = 3
+	scrWorkstation screenType = 4
+	scrMembers     screenType = 5
 )
 
-var screenNames = []string{"Home", "Chat", "Tasks", "GitHub", "Members"}
+var screenNames = []string{"Home", "Chat", "Tasks", "GitHub", "Workstation", "Members"}
+
+// ── Pane layout ───────────────────────────────────────────────────────────────
+
+type paneNode struct {
+	split  byte      // 0=leaf, 'v'=top/bottom, 'h'=left/right
+	screen screenType
+	a, b   *paneNode // a=top/left  b=bottom/right
+}
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 
@@ -176,6 +187,13 @@ type Model struct {
 	reconnecting      bool
 	reconnectAttempts int
 
+	// cmdline (activated by shift+; on any screen)
+	cmdlineActive bool
+	cmdlineValue  string // typed text inside the cmdline box (independent of m.input)
+
+	// workstation screen
+	wsPane  *paneNode       // split layout within workstation (nil = default tasks|chat)
+	wsInput textinput.Model // message input inside workstation
 }
 
 func New(
@@ -184,8 +202,10 @@ func New(
 	ghClient *gh.Client,
 ) *Model {
 	ti := textinput.New()
-	ti.Placeholder = "  type a message or /help for commands"
 	ti.Focus()
+
+	wsIn := textinput.New()
+	wsIn.Focus()
 
 	return &Model{
 		cl:         cl,
@@ -195,6 +215,7 @@ func New(
 		adminToken: adminToken,
 		screen:     scrHome,
 		input:      ti,
+		wsInput:    wsIn,
 		tasks:      []*protocol.Task{},
 		messages:   []*protocol.ChatMessage{},
 		members:    []*protocol.Member{},
@@ -272,35 +293,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "esc":
-			if m.prevScreen != m.screen {
-				m.screen = m.prevScreen
+			if m.cmdlineActive {
+				m.cmdlineActive = false
+				m.cmdlineValue = ""
+				return m, nil
+			}
+			// go back to home from any other screen
+			if m.screen != scrHome {
+				m.prevScreen = m.screen
+				m.screen = scrHome
+				m.input.SetValue("")
 				m.refreshContent()
 			}
 			return m, nil
 
-		// screen switching via number keys — only when input is empty
-		case "1", "2", "3", "4", "5":
-			if m.input.Value() != "" {
-				var inputCmd tea.Cmd
-				m.input, inputCmd = m.input.Update(msg)
-				return m, inputCmd
+		case ":":
+			if m.cmdlineActive {
+				m.cmdlineActive = false
+				m.cmdlineValue = ""
+			} else {
+				m.cmdlineActive = true
+				m.cmdlineValue = ""
 			}
-			target := screenType(int(msg.String()[0]-'1'))
-			m.prevScreen = m.screen
-			m.screen = target
-			if m.screen == scrChat {
-				m.unreadChat = 0
-				m.chatVP.GotoBottom()
-			}
-			var cmd tea.Cmd
-			if m.screen == scrGitHub && m.ghClient != nil && m.ghClient.IsConfigured() && m.ghData == nil && !m.ghLoading {
-				m.ghLoading = true
-				cmd = fetchGitHub(m.ghClient)
-			}
-			m.refreshContent()
-			return m, cmd
+			return m, nil
 
-		// sub-tab navigation with [ and ]
+		// sub-tab navigation — only on task/github screens
 		case "[":
 			if m.screen == scrTasks {
 				if m.taskFilter > 0 {
@@ -333,26 +350,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		case "tab":
-			m.prevScreen = m.screen
-			m.screen = screenType((int(m.screen) + 1) % len(screenNames))
-			if m.screen == scrChat {
-				m.unreadChat = 0
-				m.chatVP.GotoBottom()
-			}
-			if m.screen == scrGitHub && m.ghClient != nil && m.ghClient.IsConfigured() && m.ghData == nil && !m.ghLoading {
-				m.ghLoading = true
-				m.refreshContent()
-				return m, fetchGitHub(m.ghClient)
-			}
-			m.refreshContent()
-			return m, nil
-
 		case "up", "down":
 			var cmd tea.Cmd
 			switch m.screen {
-			case scrHome:
-				m.homeVP, cmd = m.homeVP.Update(msg)
 			case scrChat:
 				m.chatVP, cmd = m.chatVP.Update(msg)
 			case scrTasks:
@@ -367,8 +367,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgup", "pgdown":
 			var cmd tea.Cmd
 			switch m.screen {
-			case scrHome:
-				m.homeVP, cmd = m.homeVP.Update(msg)
 			case scrChat:
 				m.chatVP, cmd = m.chatVP.Update(msg)
 			case scrTasks:
@@ -381,15 +379,62 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 
 		case "enter":
+			if m.cmdlineActive {
+				text := strings.TrimSpace(m.cmdlineValue)
+				m.cmdlineActive = false
+				m.cmdlineValue = ""
+				if text != "" {
+					return m, m.handleHomeCmd(text)
+				}
+				return m, nil
+			}
+			if m.screen == scrWorkstation {
+				text := strings.TrimSpace(m.wsInput.Value())
+				m.wsInput.SetValue("")
+				if text != "" {
+					m.cl.SendChat(text)
+				}
+				return m, nil
+			}
 			text := strings.TrimSpace(m.input.Value())
 			m.input.SetValue("")
 			if text == "" {
 				return m, nil
 			}
-			cmd := m.handleText(text)
-			return m, cmd
+			return m, m.handleText(text)
 
 		default:
+			// q on non-home screens goes back home (not when cmdline active)
+			if m.screen != scrHome && msg.String() == "q" && m.input.Value() == "" && !m.cmdlineActive {
+				m.screen = scrHome
+				m.input.SetValue("")
+				m.refreshContent()
+				return m, nil
+			}
+			// cmdline is active: route keys into cmdlineValue, never touch m.input
+			if m.cmdlineActive {
+				switch msg.String() {
+				case "backspace", "ctrl+h":
+					runes := []rune(m.cmdlineValue)
+					if len(runes) > 0 {
+						m.cmdlineValue = string(runes[:len(runes)-1])
+					}
+				default:
+					if s := msg.String(); len([]rune(s)) == 1 {
+						m.cmdlineValue += s
+					}
+				}
+				return m, nil
+			}
+			// on home screen without cmdline, ignore all keys
+			if m.screen == scrHome {
+				return m, nil
+			}
+			if m.screen == scrWorkstation {
+				var inputCmd tea.Cmd
+				m.wsInput, inputCmd = m.wsInput.Update(msg)
+				return m, inputCmd
+			}
 			var inputCmd tea.Cmd
 			m.input, inputCmd = m.input.Update(msg)
 			return m, inputCmd
@@ -405,22 +450,140 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "loading..."
 	}
-
-	header := m.viewHeader()
-	nav := m.viewNav()
-	screenContent := m.viewScreen()
-	status := m.viewStatus()
-	parts := []string{header, nav, screenContent, status}
-	if m.screen != scrHome {
-		parts = append(parts, m.viewInput())
+	base := m.viewBase()
+	if m.cmdlineActive {
+		return m.overlayCmd(base)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return base
+}
+
+// viewBase renders the full screen without any cmdline overlay.
+func (m Model) viewBase() string {
+	header := m.viewHeader()
+	status := m.viewStatus()
+	if m.screen == scrWorkstation {
+		return lipgloss.JoinVertical(lipgloss.Left, header, m.viewWorkstation(), status)
+	}
+	screenContent := m.viewScreen()
+	if m.screen == scrHome {
+		return lipgloss.JoinVertical(lipgloss.Left, header, screenContent, status)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, screenContent, status, m.viewInput())
+}
+
+// buildCmdlineBox returns the rendered box string and its visual width.
+func (m Model) buildCmdlineBox() (string, int) {
+	const (
+		padW   = 2  // padding chars each side inside border
+		inputW = 48 // visible columns for typed text
+		// inner width between border chars: padW + "❯" + " " + inputW + padW
+		innerW = padW + 1 + 1 + inputW + padW // = 54
+		boxW   = innerW + 2                    // = 56 total visual width
+	)
+
+	borderSt := lipgloss.NewStyle().Foreground(cRed)
+	promptSt  := lipgloss.NewStyle().Foreground(cRed).Bold(true)
+	titleSt   := lipgloss.NewStyle().Foreground(cRedDim)
+	cursorSt  := lipgloss.NewStyle().Reverse(true)
+
+	// Top border with "Cmdline" centred
+	title     := " Cmdline "
+	dashTotal := innerW - len(title) // all ASCII
+	leftDash  := dashTotal / 2
+	rightDash := dashTotal - leftDash
+	topLine := borderSt.Render("╭"+strings.Repeat("─", leftDash)) +
+		titleSt.Render(title) +
+		borderSt.Render(strings.Repeat("─", rightDash)+"╮")
+
+	// Content: use cmdlineValue + block cursor — avoids ANSI cursor-positioning escape bug
+	valRunes := []rune(m.cmdlineValue)
+	if len(valRunes) > inputW-1 {
+		valRunes = valRunes[len(valRunes)-(inputW-1):]
+	}
+	cursor  := cursorSt.Render(" ")
+	trailing := strings.Repeat(" ", inputW-len(valRunes)-1)
+
+	contentLine := borderSt.Render("│") +
+		strings.Repeat(" ", padW) +
+		promptSt.Render("❯") + " " +
+		string(valRunes) + cursor + trailing +
+		strings.Repeat(" ", padW) +
+		borderSt.Render("│")
+
+	bottomLine := borderSt.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	return topLine + "\n" + contentLine + "\n" + bottomLine, boxW
+}
+
+// stripANSI removes ANSI escape sequences, returning plain visual text.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// overlayCmd paints the cmdline box centred over the base view,
+// preserving the original content visible on either side of the box.
+func (m Model) overlayCmd(base string) string {
+	box, boxW := m.buildCmdlineBox()
+	boxLines := strings.Split(box, "\n")
+	boxH := len(boxLines)
+
+	baseLines := strings.Split(base, "\n")
+	totalRows := len(baseLines)
+
+	startRow := (totalRows - boxH) / 2
+	startCol := (m.width - boxW) / 2
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	result := make([]string, totalRows)
+	copy(result, baseLines)
+
+	for i, boxLine := range boxLines {
+		row := startRow + i
+		if row < 0 || row >= totalRows {
+			continue
+		}
+		// Strip ANSI from the base row to get plain visual runes for left/right context
+		visual := []rune(stripANSI(result[row]))
+		for len(visual) < m.width {
+			visual = append(visual, ' ')
+		}
+		leftEnd := startCol
+		if leftEnd > len(visual) {
+			leftEnd = len(visual)
+		}
+		left := string(visual[:leftEnd])
+		rightStart := startCol + boxW
+		right := ""
+		if rightStart < len(visual) {
+			right = string(visual[rightStart:])
+		}
+		result[row] = left + boxLine + right
+	}
+
+	return strings.Join(result, "\n")
 }
 
 func (m Model) viewHeader() string {
 	role := "member"
 	if m.role == "admin" {
-		role = "admin *"
+		role = "admin"
 	}
 	online := 0
 	for _, mem := range m.members {
@@ -428,7 +591,18 @@ func (m Model) viewHeader() string {
 			online++
 		}
 	}
-	left := lipgloss.NewStyle().Foreground(cFg).Bold(true).Render("wert")
+	var left string
+	if m.screen == scrHome {
+		left = lipgloss.NewStyle().Foreground(cFg).Bold(true).Render("wert")
+	} else {
+		screenName := screenNames[int(m.screen)]
+		left = lipgloss.NewStyle().Foreground(cFg).Bold(true).Render("wert") +
+			mutedSt.Render("  /  ") +
+			lipgloss.NewStyle().Foreground(cFg).Render(screenName)
+	}
+	if m.unreadChat > 0 && m.screen != scrChat {
+		left += "  " + unreadBadgeSt.Render(fmt.Sprintf("%d", m.unreadChat))
+	}
 	right := fmt.Sprintf("%s  %s  %d online", m.username, role, online)
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
 	if gap < 1 {
@@ -470,7 +644,7 @@ func (m Model) viewScreen() string {
 	case scrGitHub:
 		return m.viewGitHub()
 	case scrMembers:
-		return m.viewMembers()
+		return m.viewMembersScreen()
 	}
 	return ""
 }
@@ -478,23 +652,33 @@ func (m Model) viewScreen() string {
 // ── Home screen ───────────────────────────────────────────────────────────────
 
 func (m Model) viewHome() string {
-	inner := m.homeVP.View()
-	return screenBoxSt.Width(m.width - 2).Height(m.screenHeight()).Render(inner)
+	return m.homeVP.View()
 }
 
+
 func (m Model) renderHome() string {
-	var sb strings.Builder
+	w := m.width
+	if w < 20 {
+		w = 20
+	}
 
-	logo := `
-  ██╗    ██╗███████╗██████╗ ████████╗
-  ██║    ██║██╔════╝██╔══██╗╚══██╔══╝
-  ██║ █╗ ██║█████╗  ██████╔╝   ██║
-  ██║███╗██║██╔══╝  ██╔══██╗   ██║
-  ╚███╔███╔╝███████╗██║  ██║   ██║
-   ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝   ╚═╝`
+	center := func(rendered string, visualW int) string {
+		pad := (w - visualW) / 2
+		if pad < 0 {
+			pad = 0
+		}
+		return strings.Repeat(" ", pad) + rendered
+	}
 
-	sb.WriteString(lipgloss.NewStyle().Foreground(cRed).Bold(true).Render(logo))
-	sb.WriteString("\n\n")
+	logoLines := []string{
+		`██╗    ██╗███████╗██████╗ ████████╗`,
+		`██║    ██║██╔════╝██╔══██╗╚══██╔══╝`,
+		`██║ █╗ ██║█████╗  ██████╔╝   ██║   `,
+		`██║███╗██║██╔══╝  ██╔══██╗   ██║   `,
+		`╚███╔███╔╝███████╗██║  ██║   ██║   `,
+		` ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝   ╚═╝  `,
+	}
+	logoSt := lipgloss.NewStyle().Foreground(cRed).Bold(true)
 
 	var open, done int
 	for _, t := range m.tasks {
@@ -511,19 +695,52 @@ func (m Model) renderHome() string {
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("  %s open   %s done   %s online\n",
-		lipgloss.NewStyle().Foreground(cRed).Bold(true).Render(fmt.Sprintf("%d", open)),
-		lipgloss.NewStyle().Foreground(cGreen).Bold(true).Render(fmt.Sprintf("%d", done)),
-		lipgloss.NewStyle().Foreground(cGreen).Bold(true).Render(fmt.Sprintf("%d", online)),
-	))
+	type menuItem struct{ label, key string }
+	menu := []menuItem{
+		{"Chat", "2"},
+		{"Tasks", "3"},
+		{"GitHub", "4"},
+		{"Members", "5"},
+		{"Help", "/help"},
+		{"Quit", "ctrl+c"},
+	}
+	menuW := 32
+
+	// logo(6) + blank(1) + stats(1) + blank(2) + menu(6) + blank(1) = 17
+	contentLines := 6 + 1 + 1 + 2 + 6 + 1
+	vpH := m.height - 2 // header(1) + status(1)
+	topPad := (vpH - contentLines) / 2
+	if topPad < 1 {
+		topPad = 1
+	}
+
+	var sb strings.Builder
+	for i := 0; i < topPad; i++ {
+		sb.WriteString("\n")
+	}
+
+	for _, line := range logoLines {
+		vw := lipgloss.Width(line)
+		sb.WriteString(center(logoSt.Render(line), vw) + "\n")
+	}
 	sb.WriteString("\n")
 
-	for _, mem := range m.members {
-		dot := mutedSt.Render("·")
-		if mem.Online {
-			dot = lipgloss.NewStyle().Foreground(cGreen).Render("·")
+	stats := fmt.Sprintf("%d open  %d done  %d online", open, done, online)
+	sb.WriteString(center(mutedSt.Render(stats), len(stats)) + "\n")
+	sb.WriteString("\n\n")
+
+	for i, item := range menu {
+		if i == 4 {
+			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("  %s  %s\n", dot, mutedSt.Render(mem.Username)))
+		gap := menuW - len(item.label) - len(item.key)
+		if gap < 1 {
+			gap = 1
+		}
+		row := lipgloss.NewStyle().Foreground(cFg).Render(item.label) +
+			strings.Repeat(" ", gap) +
+			mutedSt.Render(item.key)
+		sb.WriteString(center(row, menuW) + "\n")
 	}
 
 	return sb.String()
@@ -853,13 +1070,38 @@ func renderLabels(labels []string) string {
 	return "  " + strings.Join(out, " ")
 }
 
-// ── Members screen ────────────────────────────────────────────────────────────
+// ── Workstation screen ────────────────────────────────────────────────────────
 
-func (m Model) viewMembers() string {
+func (m Model) viewWorkstation() string {
+	inputH := 3 // border(2) + 1 content line
+	paneH := m.height - 2 - inputH
+	if paneH < 4 {
+		paneH = 4
+	}
+	var paneArea string
+	if m.wsPane != nil {
+		paneArea = m.renderPane(m.wsPane, m.width, paneH)
+	} else {
+		leftW := m.width / 2
+		rightW := m.width - leftW
+		left := m.renderScreenPane(scrTasks, leftW, paneH)
+		right := m.renderScreenPane(scrChat, rightW, paneH)
+		paneArea = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, paneArea, m.viewWsInput())
+}
+
+func (m Model) viewWsInput() string {
+	m.wsInput.Width = m.width - 8
+	return inputBoxSt.Render(m.wsInput.View())
+}
+
+func (m Model) viewMembersScreen() string {
 	inner := m.membersVP.View()
 	return screenBoxSt.Width(m.width - 2).Height(m.screenHeight()).Render(inner)
 }
 
+// renderMembers returns member list content (used by /members command and pane rendering).
 func (m Model) renderMembers() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
@@ -922,38 +1164,28 @@ func (m Model) viewStatus() string {
 }
 
 func (m Model) viewInput() string {
-	m.input.Placeholder = m.inputPlaceholder()
+	m.input.Placeholder = ""
 	// width: terminal minus border(2) minus padding(2) each side = minus 6
 	// do NOT set .Width() on the box — lipgloss miscounts ANSI cursor width and wraps
 	m.input.Width = m.width - 8
 	return inputBoxSt.Render(m.input.View())
 }
 
-func (m Model) inputPlaceholder() string {
-	switch m.screen {
-	case scrHome:
-		return "  type /help or 1-5 to switch screens"
-	case scrChat:
-		return "  message or /command..."
-	case scrTasks:
-		return "  /done  /wip  /blocked  /assign @user..."
-	case scrGitHub:
-		return "  /github refresh  /github setup --token ... --org ..."
-	case scrMembers:
-		return "  /members or type a message"
-	}
-	return "  /"
-}
-
 // ── layout helpers ────────────────────────────────────────────────────────────
 
 func (m Model) screenHeight() int {
-	// header(1) + nav(1) + status(1) + screen_border(2) = 5 fixed
-	// input box(3) only on non-home screens
-	h := m.height - 5
-	if m.screen != scrHome {
-		h -= 3
+	// header(1) + status(1) = 2 fixed on all screens
+	// home: no input, no border → content fills m.height - 2
+	// others: input(3) + border(2) → m.height - 2 - 3 - 2 = m.height - 7
+	if m.screen == scrHome {
+		// header(1) + homeVP + status(1) = m.height
+		h := m.height - 2
+		if h < 4 {
+			h = 4
+		}
+		return h
 	}
+	h := m.height - 7
 	if h < 4 {
 		h = 4
 	}
@@ -971,18 +1203,23 @@ func clamp(v, lo, hi int) int {
 }
 
 func (m *Model) rebuildViewports() {
+	// home is borderless and full-width; others have a box border (w = m.width-4)
+	hw := m.width
+	if hw < 10 {
+		hw = 10
+	}
 	w := m.width - 4
 	if w < 10 {
 		w = 10
 	}
-	// home has no input box: header(1)+nav(1)+status(1)+border(2) = 5
-	homeH := clamp(m.height-5, 2, m.height)
-	// other screens also subtract input(3)
-	ph := clamp(m.height-8, 2, m.height)
-	m.homeVP = viewport.New(w, homeH)
+	// home: header(1) + status(1) = 2 overhead, no border
+	homeH := clamp(m.height-2, 2, m.height)
+	// others: header(1) + status(1) + input(3) + border(2) = 7 overhead
+	ph := clamp(m.height-7, 2, m.height)
+	m.homeVP = viewport.New(hw, homeH)
 	m.chatVP = viewport.New(w, ph)
-	m.tasksVP = viewport.New(w, clamp(ph-1, 2, ph)) // 1 line tab bar
-	m.githubVP = viewport.New(w, clamp(ph-2, 2, ph)) // header + tab bar = 2 lines
+	m.tasksVP = viewport.New(w, clamp(ph-1, 2, ph))  // 1 line tab bar
+	m.githubVP = viewport.New(w, clamp(ph-2, 2, ph)) // header + tab bar
 	m.membersVP = viewport.New(w, ph)
 }
 
@@ -1005,12 +1242,72 @@ func (m *Model) refreshContent() {
 // ── command handler ───────────────────────────────────────────────────────────
 
 func (m *Model) handleText(text string) tea.Cmd {
+	// home cmdline: q/2/3/4/5 navigation
+	if m.screen == scrHome {
+		return m.handleHomeCmd(text)
+	}
 	if strings.HasPrefix(text, "/") {
 		return m.handleCommand(text)
 	}
 	m.cl.SendChat(text)
-	// switch to chat to see the message
 	m.screen = scrChat
+	return nil
+}
+
+func (m *Model) handleHomeCmd(text string) tea.Cmd {
+	cmd := strings.TrimSpace(text)
+
+	// Split pane commands — navigate to workstation and set layout
+	if strings.HasPrefix(cmd, "sp") {
+		m.parseSplitCmd(cmd)
+		m.screen = scrWorkstation
+		return nil
+	}
+	if cmd == "cl" || cmd == "close" {
+		m.wsPane = nil
+		m.screen = scrWorkstation
+		return nil
+	}
+
+	switch cmd {
+	case "q", "q!", "quit":
+		return tea.Quit
+	case "docs":
+		openBrowser("https://wert-docs.vercel.app")
+		return nil
+	case "1":
+		m.wsPane = nil
+		m.screen = scrHome
+		m.refreshContent()
+	case "2":
+		m.wsPane = nil
+		m.screen = scrChat
+		m.unreadChat = 0
+		m.refreshContent()
+		m.chatVP.GotoBottom()
+	case "3":
+		m.wsPane = nil
+		m.screen = scrTasks
+		m.refreshContent()
+	case "4":
+		m.wsPane = nil
+		m.screen = scrGitHub
+		if m.ghClient != nil && m.ghClient.IsConfigured() && m.ghData == nil && !m.ghLoading {
+			m.ghLoading = true
+			m.refreshContent()
+			return fetchGitHub(m.ghClient)
+		}
+		m.refreshContent()
+	case "5":
+		m.wsPane = nil
+		m.screen = scrWorkstation
+		m.refreshContent()
+	case "6":
+		m.screen = scrMembers
+		m.refreshContent()
+	default:
+		m.statusMsg = "unknown: try  q  1-5  sp v<n> [h<n>]  cl"
+	}
 	return nil
 }
 
@@ -1403,6 +1700,107 @@ func truncate(s string, n int) string {
 	return string(runes[:n-1]) + "..."
 }
 
+// ── Split pane methods ────────────────────────────────────────────────────────
+
+func (m *Model) parseSplitCmd(text string) {
+	parts := strings.Fields(text) // ["sp", "v2", "h5"]
+	if len(parts) < 2 {
+		m.statusMsg = "usage: sp <v|h><n> [<v|h><n>]  e.g. sp v2 h5"
+		return
+	}
+	current := m.screen
+	if m.wsPane != nil {
+		node := m.wsPane
+		for node.split != 0 {
+			node = node.a
+		}
+		current = node.screen
+		m.wsPane = nil
+	}
+	arg0 := parts[1]
+	if len(arg0) < 2 {
+		m.statusMsg = "invalid: " + arg0
+		return
+	}
+	dir0 := arg0[0]
+	n0 := int(arg0[1] - '0')
+	if (dir0 != 'v' && dir0 != 'h') || n0 < 1 || n0 > 6 {
+		m.statusMsg = "use v or h and screen 1-5"
+		return
+	}
+	secondLeaf := &paneNode{screen: screenType(n0 - 1)}
+	root := &paneNode{split: dir0, a: &paneNode{screen: current}, b: secondLeaf}
+	if len(parts) >= 3 {
+		arg1 := parts[2]
+		if len(arg1) >= 2 {
+			dir1 := arg1[0]
+			n1 := int(arg1[1] - '0')
+			if (dir1 == 'v' || dir1 == 'h') && n1 >= 1 && n1 <= 6 {
+				root.b = &paneNode{
+					split:  dir1,
+					a:      secondLeaf,
+					b:      &paneNode{screen: screenType(n1 - 1)},
+				}
+			}
+		}
+	}
+	m.wsPane = root
+}
+
+func (m Model) renderPane(node *paneNode, w, h int) string {
+	if node == nil || w < 2 || h < 2 {
+		return ""
+	}
+	if node.split == 0 {
+		return m.renderScreenPane(node.screen, w, h)
+	}
+	if node.split == 'v' {
+		topH := h / 2
+		return lipgloss.JoinVertical(lipgloss.Left,
+			m.renderPane(node.a, w, topH),
+			m.renderPane(node.b, w, h-topH),
+		)
+	}
+	// horizontal split
+	leftW := w / 2
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		m.renderPane(node.a, leftW, h),
+		m.renderPane(node.b, w-leftW, h),
+	)
+}
+
+func (m Model) renderScreenPane(screen screenType, w, h int) string {
+	if w < 4 || h < 4 {
+		return screenBoxSt.Width(w - 2).Height(h - 2).Render("")
+	}
+	vpW := w - 2
+	vpH := h - 4 // border(2) + label line(1) + padding(1)
+	if vpH < 1 {
+		vpH = 1
+	}
+	vp := viewport.New(vpW, vpH)
+	switch screen {
+	case scrHome:
+		vp.SetContent(m.renderHome())
+	case scrChat:
+		vp.SetContent(m.renderChat())
+		vp.GotoBottom()
+	case scrTasks:
+		vp.SetContent(m.renderTasks())
+	case scrGitHub:
+		vp.SetContent(m.renderGitHub())
+	case scrWorkstation:
+		vp.SetContent(m.renderTasks()) // default pane content for workstation slot
+	case scrMembers:
+		vp.SetContent(m.renderMembers())
+	}
+	label := sectionTitleSt.Render("  " + screenNames[int(screen)])
+	inner := lipgloss.JoinVertical(lipgloss.Left, label, vp.View())
+	return screenBoxSt.Width(w - 2).Height(h - 2).Render(inner)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 func parseQuoted(s string) []string {
 	var tokens []string
 	var cur strings.Builder
@@ -1436,5 +1834,18 @@ func parseQuoted(s string) []string {
 		tokens = append(tokens, cur.String())
 	}
 	return tokens
+}
+
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
 }
 

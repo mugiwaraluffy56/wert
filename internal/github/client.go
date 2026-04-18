@@ -90,13 +90,13 @@ func (c *Client) FetchAll() (*OrgData, error) {
 	}
 	data.Repos = repos
 
-	prs, err := c.searchItems("is:pr is:open")
+	prs, err := c.searchItems("is:pr is:open", repos)
 	if err != nil {
 		return nil, fmt.Errorf("prs: %w", err)
 	}
 	data.PRs = toPRs(prs)
 
-	issues, err := c.searchItems("is:issue is:open")
+	issues, err := c.searchItems("is:issue is:open", repos)
 	if err != nil {
 		return nil, fmt.Errorf("issues: %w", err)
 	}
@@ -110,14 +110,20 @@ func (c *Client) FetchAll() (*OrgData, error) {
 
 func (c *Client) fetchRepos() ([]Repo, error) {
 	var repos []Repo
-	err := c.get(fmt.Sprintf("/orgs/%s/repos?sort=pushed&per_page=20", c.org), &repos)
-	return repos, err
+	// Try org endpoint first; fall back to user endpoint (handles personal accounts)
+	if err := c.get(fmt.Sprintf("/orgs/%s/repos?sort=pushed&per_page=20", c.org), &repos); err != nil {
+		if err2 := c.get(fmt.Sprintf("/users/%s/repos?sort=pushed&per_page=20", c.org), &repos); err2 != nil {
+			return nil, err // return the original org error
+		}
+	}
+	return repos, nil
 }
 
 func (c *Client) fetchMembers() ([]OrgMember, error) {
 	var members []OrgMember
-	err := c.get(fmt.Sprintf("/orgs/%s/members?per_page=30", c.org), &members)
-	return members, err
+	// Non-fatal: org member list is only available for orgs, not personal accounts
+	_ = c.get(fmt.Sprintf("/orgs/%s/members?per_page=30", c.org), &members)
+	return members, nil
 }
 
 // rawSearchItem is used only for parsing; we convert to PR/Issue after.
@@ -144,12 +150,32 @@ type searchResp struct {
 	Items      []rawSearchItem  `json:"items"`
 }
 
-func (c *Client) searchItems(qualifier string) ([]rawSearchItem, error) {
-	q := fmt.Sprintf("org:%s %s sort:updated", c.org, qualifier)
-	path := "/search/issues?per_page=30&q=" + urlEncode(q)
+func (c *Client) searchItems(qualifier string, repos []Repo) ([]rawSearchItem, error) {
 	var resp searchResp
-	if err := c.get(path, &resp); err != nil {
-		return nil, err
+	// Try org qualifier first; fall back to user qualifier for personal accounts
+	q := fmt.Sprintf("org:%s %s sort:updated", c.org, qualifier)
+	if err := c.get("/search/issues?per_page=30&q="+urlEncode(q), &resp); err != nil {
+		q = fmt.Sprintf("user:%s %s sort:updated", c.org, qualifier)
+		if err2 := c.get("/search/issues?per_page=30&q="+urlEncode(q), &resp); err2 != nil {
+			// Last resort: search per repo using repo: qualifiers
+			if len(repos) == 0 {
+				return nil, err
+			}
+			var qb strings.Builder
+			for i, r := range repos {
+				if i >= 15 {
+					break // keep query URL reasonable
+				}
+				qb.WriteString("repo:")
+				qb.WriteString(r.FullName)
+				qb.WriteByte(' ')
+			}
+			qb.WriteString(qualifier)
+			qb.WriteString(" sort:updated")
+			if err3 := c.get("/search/issues?per_page=30&q="+urlEncode(qb.String()), &resp); err3 != nil {
+				return nil, err // return original org error
+			}
+		}
 	}
 	return resp.Items, nil
 }
