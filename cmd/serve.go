@@ -7,11 +7,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"wert/internal/client"
-	"wert/internal/server"
 	"wert/internal/client/tui"
+	gh "wert/internal/github"
+	"wert/internal/server"
 )
 
 var serveCmd = &cobra.Command{
@@ -28,49 +30,48 @@ var (
 	serveName     string
 	serveToken    string
 	serveDataFile string
+	serveGHToken  string
+	serveGHOrg    string
 )
 
 func init() {
 	serveCmd.Flags().StringVarP(&serveName, "name", "n", "", "Your admin display name (required)")
 	serveCmd.Flags().StringVarP(&servePort, "port", "p", "8080", "Port to listen on")
-	serveCmd.Flags().StringVar(&serveToken, "token", "", "Admin token (optional; others need it to join as admin)")
+	serveCmd.Flags().StringVar(&serveToken, "token", "", "Admin token (optional)")
 	serveCmd.Flags().StringVar(&serveDataFile, "data", "wert-data.json", "Path to persistence file")
+	serveCmd.Flags().StringVar(&serveGHToken, "github-token", "", "GitHub personal access token")
+	serveCmd.Flags().StringVar(&serveGHOrg, "github-org", "", "GitHub organization name")
 	_ = serveCmd.MarkFlagRequired("name")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	// ensure admin always gets admin role even when no --token flag is passed
+	if serveToken == "" {
+		serveToken = uuid.New().String()
+	}
 	addr := "0.0.0.0:" + servePort
 
-	// Print banner before the TUI takes over.
 	localIPs := server.LocalIPs()
 	fmt.Println()
-	fmt.Println("  ▶ wert server starting…")
-	fmt.Printf("  Listening on  :%s\n", servePort)
+	fmt.Println("  wert server starting")
+	fmt.Printf("  port  :%s\n", servePort)
 	if len(localIPs) > 0 {
 		for _, ip := range localIPs {
-			fmt.Printf("  Local IP      %s\n", ip)
+			fmt.Printf("  ip    %s\n", ip)
 		}
-		fmt.Printf("\n  Members join with:\n")
+		fmt.Println()
 		for _, ip := range localIPs {
-			fmt.Printf("    wert join --host %s:%s --name <username>\n", ip, servePort)
+			fmt.Printf("  wert join --host %s:%s --name <username>\n", ip, servePort)
 		}
-	}
-	if serveToken != "" {
-		fmt.Printf("\n  Admin token:  %s\n", serveToken)
 	}
 	fmt.Println()
 
-	// Start the HTTP + WebSocket server in background.
 	srv := server.New(addr, serveDataFile, serveToken)
 	go srv.Start()
-
-	// Give the server a moment to bind.
 	time.Sleep(150 * time.Millisecond)
 
-	// Connect as admin.
 	host := "localhost:" + servePort
-	token := serveToken
-	cl, err := client.Connect(host, serveName, token)
+	cl, err := client.Connect(host, serveName, serveToken)
 	if err != nil {
 		return fmt.Errorf("failed to connect to own server: %w", err)
 	}
@@ -80,8 +81,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		joinStr = strings.Join(localIPs, ", ") + ":" + servePort
 	}
 
-	m := tui.New(cl, serveName, "admin", joinStr)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	ghClient := gh.New(serveGHToken, serveGHOrg)
+	m := tui.New(cl, serveName, "admin", joinStr, serveToken, ghClient)
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

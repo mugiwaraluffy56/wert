@@ -214,7 +214,7 @@ func (h *Hub) handleEnvelope(c *client, env protocol.Envelope) {
 		if priority == "" {
 			priority = "medium"
 		}
-		task := h.store.CreateTask(p.Task.Title, p.Task.Description, p.Task.Assignee, priority, c.username)
+		task := h.store.CreateTask(p.Task.Title, p.Task.Description, p.Task.Assignee, priority, p.Task.DueDate, c.username)
 		data, err := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *task})
 		if err == nil {
 			h.Broadcast(data)

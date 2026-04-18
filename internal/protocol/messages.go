@@ -35,6 +35,7 @@ type Task struct {
 	Assignee    string     `json:"assignee"`
 	Status      TaskStatus `json:"status"`
 	Priority    string     `json:"priority"` // low | medium | high
+	DueDate     string     `json:"due_date,omitempty"` // "2006-01-02" format, optional
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	UpdatedBy   string     `json:"updated_by"`

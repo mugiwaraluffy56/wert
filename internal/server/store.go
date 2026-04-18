@@ -71,7 +71,7 @@ func (s *Store) persist() {
 
 // ---- Tasks ----
 
-func (s *Store) CreateTask(title, description, assignee, priority, createdBy string) *protocol.Task {
+func (s *Store) CreateTask(title, description, assignee, priority, dueDate, createdBy string) *protocol.Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := &protocol.Task{
@@ -81,6 +81,7 @@ func (s *Store) CreateTask(title, description, assignee, priority, createdBy str
 		Assignee:    assignee,
 		Status:      protocol.StatusTodo,
 		Priority:    priority,
+		DueDate:     dueDate,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 		UpdatedBy:   createdBy,

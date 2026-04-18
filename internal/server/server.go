@@ -97,6 +97,7 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 			Description string `json:"description"`
 			Assignee    string `json:"assignee"`
 			Priority    string `json:"priority"`
+			DueDate     string `json:"due_date"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Title == "" {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -105,7 +106,7 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 		if body.Priority == "" {
 			body.Priority = "medium"
 		}
-		task := s.hub.store.CreateTask(body.Title, body.Description, body.Assignee, body.Priority, "mcp")
+		task := s.hub.store.CreateTask(body.Title, body.Description, body.Assignee, body.Priority, body.DueDate, "mcp")
 		// Broadcast to all connected clients.
 		data, _ := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *task})
 		s.hub.Broadcast(data)

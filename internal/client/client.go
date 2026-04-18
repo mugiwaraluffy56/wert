@@ -11,13 +11,17 @@ import (
 
 // Client manages the WebSocket connection for both admin and member modes.
 type Client struct {
-	Send chan []byte           // TUI writes outgoing messages here
+	Send chan []byte            // TUI writes outgoing messages here
 	Recv chan protocol.Envelope // TUI reads incoming messages from here
 
 	conn     *websocket.Conn
+	host     string
 	username string
 	done     chan struct{}
 }
+
+// Host returns the host:port this client connected to.
+func (c *Client) Host() string { return c.host }
 
 // Connect dials the server and registers with the given username.
 // If adminToken is non-empty the server will grant admin role.
@@ -29,11 +33,12 @@ func Connect(host, username, adminToken string) (*Client, error) {
 	}
 
 	c := &Client{
-		Send: make(chan []byte, 256),
-		Recv: make(chan protocol.Envelope, 256),
-		conn: conn,
+		Send:     make(chan []byte, 256),
+		Recv:     make(chan protocol.Envelope, 256),
+		conn:     conn,
+		host:     host,
 		username: username,
-		done: make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 
 	// Register immediately.
