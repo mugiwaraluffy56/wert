@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>wert — docs</title>
+<title>wert docs</title>
 <style>
   :root {
     --red:      #E53935;
@@ -307,12 +307,14 @@
 
   <div class="nav-section-label">Overview</div>
   <a href="#" data-page="intro" class="active">Introduction</a>
-  <a href="#" data-page="install">Installation</a>
+  <a href="#" data-page="download">Download</a>
+  <a href="#" data-page="install">Build from source</a>
 
   <div class="nav-section-label">Running wert</div>
   <a href="#" data-page="serve">wert serve (admin)</a>
   <a href="#" data-page="join">wert join (member)</a>
   <a href="#" data-page="mcp">MCP server</a>
+  <a href="#" data-page="agents">Agent communication</a>
 
   <div class="nav-section-label">TUI Screens</div>
   <a href="#" data-page="nav">Navigation</a>
@@ -365,7 +367,7 @@
        ▼           ▼           ▼
   wert join    wert join    wert mcp
   (member)     (member)     (Claude)</span></div>
-
+<img src="../simple.png" alt="img not found" style="width:700px; height:auto;">
   <h2>Key concepts</h2>
   <ul>
     <li><strong>Admin</strong> — can create, assign, and delete tasks. Runs the server.</li>
@@ -375,33 +377,88 @@
   </ul>
 </section>
 
+<!-- ── DOWNLOAD ── -->
+<section id="page-download">
+  <h1>Download</h1>
+  <p class="subtitle">Prebuilt binaries for macOS, Linux, and Windows. No dependencies.</p>
+
+  <div class="callout green">
+    <span class="callout-icon">✓</span>
+    <span>Binaries are statically compiled — no runtime required. Download, make executable, move to PATH.</span>
+  </div>
+
+  <h2>macOS</h2>
+  <pre><span class="c"># Apple Silicon (M1/M2/M3)</span>
+<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-darwin-arm64
+<span class="f">chmod</span> +x wert
+<span class="f">mv</span> wert /usr/local/bin/wert
+
+<span class="c"># Intel Mac</span>
+<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-darwin-amd64
+<span class="f">chmod</span> +x wert
+<span class="f">mv</span> wert /usr/local/bin/wert</pre>
+
+  <h2>Linux</h2>
+  <pre><span class="c"># amd64 (most servers and desktops)</span>
+<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-linux-amd64
+<span class="f">chmod</span> +x wert
+<span class="f">sudo mv</span> wert /usr/local/bin/wert
+
+<span class="c"># arm64 (Raspberry Pi, AWS Graviton, etc.)</span>
+<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-linux-arm64
+<span class="f">chmod</span> +x wert
+<span class="f">sudo mv</span> wert /usr/local/bin/wert</pre>
+
+  <h2>Windows</h2>
+  <pre><span class="c"># PowerShell — amd64</span>
+<span class="f">Invoke-WebRequest</span> -Uri https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-windows-amd64.exe `
+  -OutFile wert.exe
+
+<span class="c"># Move to a folder in your PATH, e.g.:</span>
+<span class="f">Move-Item</span> wert.exe C:\Windows\System32\wert.exe</pre>
+
+  <h2>Verify checksum</h2>
+  <pre><span class="c"># Download the checksums file for the release and verify</span>
+<span class="f">curl</span> -Lo checksums.txt https://github.com/mugiwaraluffy56/wert/releases/latest/download/checksums.txt
+<span class="f">sha256sum</span> -c checksums.txt <span class="k">--ignore-missing</span></pre>
+
+  <h2>All releases</h2>
+  <p>Browse all releases and changelogs at <a href="https://github.com/mugiwaraluffy56/wert/releases" style="color:var(--red-dim)">github.com/mugiwaraluffy56/wert/releases</a>.</p>
+
+  <h2>Self-update</h2>
+  <p>Once installed, wert can update itself:</p>
+  <pre><span class="f">wert</span> update</pre>
+  <p>Or type <code>:update</code> in the cmdline while the TUI is open. It downloads the latest binary, replaces the current one in-place, and relaunches automatically.</p>
+</section>
+
 <!-- ── INSTALL ── -->
 <section id="page-install">
-  <h1>Installation</h1>
-  <p class="subtitle">Build from source — requires Go 1.21+.</p>
+  <h1>Build from source</h1>
+  <p class="subtitle">Requires Go 1.22+.</p>
 
   <h2>Build</h2>
-  <pre><span class="f">git</span> clone https://github.com/your-org/wert
+  <pre><span class="f">git</span> clone https://github.com/mugiwaraluffy56/wert
 <span class="f">cd</span> wert
 <span class="f">go</span> build -o wert .
 
 <span class="c"># install to PATH</span>
 <span class="f">cp</span> wert /usr/local/bin/wert</pre>
 
-  <h2>Cross-compile</h2>
-  <pre><span class="f">make</span> cross-build   <span class="c"># linux + darwin × amd64/arm64</span></pre>
+  <h2>Cross-compile all platforms</h2>
+  <pre><span class="f">make</span> cross-build   <span class="c"># linux + darwin + windows × amd64/arm64 → dist/</span></pre>
 
   <h2>Flags overview</h2>
   <table>
     <tr><th>command</th><th>flag</th><th>default</th><th>description</th></tr>
     <tr><td rowspan="4"><code>wert serve</code></td><td><code>--name</code></td><td><em>required</em></td><td>your display name</td></tr>
     <tr><td><code>--port</code></td><td>8080</td><td>server listen port</td></tr>
-    <tr><td><code>--token</code></td><td><em>none</em></td><td>admin token (optional)</td></tr>
-    <tr><td><code>--data</code></td><td>wert-data.json</td><td>persistence file</td></tr>
-    <tr><td rowspan="3"><code>wert join</code></td><td><code>--host</code></td><td><em>required</em></td><td>server address e.g. <code>192.168.1.5:8080</code></td></tr>
+    <tr><td><code>--token</code></td><td><em>none</em></td><td>join password — anyone who knows it can connect as member</td></tr>
+    <tr><td><code>--data</code></td><td>wert-data.json</td><td>persistence file path</td></tr>
+    <tr><td rowspan="3"><code>wert join</code></td><td><code>--host</code></td><td><em>required</em></td><td>server address, e.g. <code><server-ip>:8080</code></td></tr>
     <tr><td><code>--name</code></td><td><em>required</em></td><td>your display name</td></tr>
-    <tr><td><code>--token</code></td><td><em>none</em></td><td>admin token (to get admin role)</td></tr>
-    <tr><td><code>wert mcp</code></td><td><code>--server</code></td><td><em>required</em></td><td>REST API base URL e.g. <code>http://192.168.1.5:8080</code></td></tr>
+    <tr><td><code>--token</code></td><td><em>none</em></td><td>join password (required if server was started with <code>--token</code>)</td></tr>
+    <tr><td rowspan="2"><code>wert mcp</code></td><td><code>--server</code></td><td>http://localhost:8080</td><td>REST API base URL</td></tr>
+    <tr><td><code>--agent-name</code></td><td><em>none</em></td><td>name to register in the agent registry</td></tr>
   </table>
 </section>
 
@@ -427,13 +484,19 @@
   </div>
 
   <h2>REST API</h2>
-  <p>The server exposes a REST API at the same port, used by the MCP server:</p>
+  <p>The server exposes a REST API at the same port, used by the MCP server and agents:</p>
   <table>
     <tr><th>method</th><th>path</th><th>description</th></tr>
     <tr><td><code>GET</code></td><td><code>/api/members</code></td><td>list connected members</td></tr>
     <tr><td><code>GET/POST</code></td><td><code>/api/tasks</code></td><td>list or create tasks</td></tr>
-    <tr><td><code>PUT/DELETE</code></td><td><code>/api/tasks/:id</code></td><td>update status or delete</td></tr>
+    <tr><td><code>PUT/DELETE</code></td><td><code>/api/tasks/:id</code></td><td>update status or delete task</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/tasks/:id/claim</code></td><td>claim task <code>{"agent":"name"}</code></td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/tasks/:id/unclaim</code></td><td>release task claim</td></tr>
     <tr><td><code>POST</code></td><td><code>/api/messages</code></td><td>send a chat message</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/watch?filter=types</code></td><td>SSE stream of all broadcast events</td></tr>
+    <tr><td><code>GET/POST/DELETE</code></td><td><code>/api/agents</code></td><td>agent capability registry</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/direct</code></td><td>deliver private DM to one recipient</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/results</code></td><td>post structured agent result to team chat</td></tr>
     <tr><td><code>GET</code></td><td><code>/health</code></td><td>health check</td></tr>
   </table>
 </section>
@@ -444,18 +507,32 @@
   <p class="subtitle">Connect to an existing server as a team member.</p>
 
   <h2>Basic usage</h2>
-  <pre><span class="f">wert</span> join <span class="k">--host</span> 192.168.1.5:8080 <span class="k">--name</span> bob</pre>
+  <pre><span class="f">wert</span> join <span class="k">--host</span> <server-ip>:8080 <span class="k">--name</span> bob</pre>
 
-  <h2>Join as admin</h2>
-  <pre><span class="f">wert</span> join <span class="k">--host</span> 192.168.1.5:8080 <span class="k">--name</span> bob <span class="k">--token</span> secret123</pre>
+  <p>If the server was started with <code>--token</code>, pass the same token:</p>
+  <pre><span class="f">wert</span> join <span class="k">--host</span> <server-ip>:8080 <span class="k">--name</span> bob <span class="k">--token</span> secret123</pre>
+
+  <h2>Join approval</h2>
+  <p>First-time members wait for the admin to approve them:</p>
+  <ul>
+    <li><strong>Member side</strong> — animated spinner shows "waiting for admin approval"</li>
+    <li><strong>Admin side</strong> — a Y/N popup appears. Press <span class="kbd">Y</span> to approve, <span class="kbd">N</span> to reject.</li>
+    <li>Once approved, the member is remembered. Future reconnects skip the approval step.</li>
+    <li>Rejected members see an "Access Denied" screen and must Ctrl+C to exit.</li>
+  </ul>
+
+  <div class="callout">
+    <span class="callout-icon">ℹ</span>
+    <span>Admins can also approve or reject from the input box: <code>/accept &lt;username&gt;</code> or <code>/reject &lt;username&gt;</code>.</span>
+  </div>
 
   <h2>Reconnection</h2>
-  <p>If the connection drops, wert automatically attempts to reconnect up to 15 times. The status bar shows reconnection progress. You don't lose your TUI state.</p>
+  <p>If the connection drops, wert automatically retries up to 15 times (every 3 seconds). The status bar shows progress. TUI state is preserved during reconnection.</p>
 
   <h2>Roles</h2>
   <table>
     <tr><th>role</th><th>what you can do</th></tr>
-    <tr><td><strong>admin</strong></td><td>create tasks, assign tasks to others, delete tasks, all member actions</td></tr>
+    <tr><td><strong>admin</strong></td><td>create tasks, assign to others, delete tasks, approve/reject joins, all member actions</td></tr>
     <tr><td><strong>member</strong></td><td>update status on your own assigned tasks, send chat messages</td></tr>
   </table>
 </section>
@@ -463,52 +540,128 @@
 <!-- ── MCP ── -->
 <section id="page-mcp">
   <h1>MCP server</h1>
-  <p class="subtitle">Let Claude manage your team's tasks and send messages.</p>
+  <p class="subtitle">Let Claude manage your team's tasks, send messages, and coordinate with other agents.</p>
 
   <h2>Start the MCP server</h2>
-  <pre><span class="f">wert</span> mcp <span class="k">--server</span> http://192.168.1.5:8080</pre>
+  <pre><span class="f">wert</span> mcp <span class="k">--server</span> http://<server-ip>:8080 <span class="k">--agent-name</span> claude</pre>
+  <p><code>--agent-name</code> registers this instance in the agent capability registry and stamps the agent's name on task updates. Omit it for anonymous access.</p>
 
-  <p>Configure it in your Claude Desktop <code>config.json</code>:</p>
+  <h2>Claude Code config</h2>
+  <p>Add wert to <code>~/.claude/settings.json</code>:</p>
   <pre>{
   <span class="s">"mcpServers"</span>: {
     <span class="s">"wert"</span>: {
       <span class="s">"command"</span>: <span class="s">"wert"</span>,
-      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://192.168.1.5:8080"</span>]
+      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://<server-ip>:8080"</span>, <span class="s">"--agent-name"</span>, <span class="s">"claude"</span>]
     }
   }
 }</pre>
+  <p>Ask Claude to run <code>team_context</code> first — it returns all members and tasks in one call.</p>
 
   <h2>Available tools</h2>
   <table>
     <tr><th>tool</th><th>description</th></tr>
-    <tr><td><code>team_context</code></td><td><strong>start here</strong> — returns full markdown with all members, task counts, and per-person breakdown with IDs. Use this first to understand the team state.</td></tr>
-    <tr><td><code>get_task</code></td><td>look up a single task by ID prefix; returns all fields including description, assignee, priority, due date, and who last updated it</td></tr>
-    <tr><td><code>search_tasks</code></td><td>case-insensitive keyword search across task titles and descriptions</td></tr>
-    <tr><td><code>list_tasks</code></td><td>get all tasks as formatted markdown, optionally filtered by assignee or status</td></tr>
-    <tr><td><code>list_members</code></td><td>get all connected members and their online status</td></tr>
-    <tr><td><code>create_task</code></td><td>create a new task with title, description, assignee, priority, and optional due date</td></tr>
-    <tr><td><code>update_task</code></td><td>change a task's status (todo / in_progress / done / blocked); automatically records <code>updated_by = "claude"</code></td></tr>
-    <tr><td><code>delete_task</code></td><td>permanently delete a task by ID prefix — consider <code>update_task</code> to <code>done</code> instead</td></tr>
-    <tr><td><code>send_message</code></td><td>send a chat message to the team (from "claude" by default)</td></tr>
-    <tr><td><code>get_dashboard</code></td><td>get a full markdown summary: members, tasks per person, recent messages</td></tr>
+    <tr><td><code>team_context</code></td><td><strong>start here</strong> — full markdown: members, task counts, per-person breakdown with IDs and claimed status</td></tr>
+    <tr><td><code>get_task</code></td><td>single task by ID prefix — all fields including claimed_by</td></tr>
+    <tr><td><code>search_tasks</code></td><td>case-insensitive keyword search across titles and descriptions</td></tr>
+    <tr><td><code>list_tasks</code></td><td>all tasks, optionally filtered by assignee or status</td></tr>
+    <tr><td><code>list_members</code></td><td>connected members and their online status</td></tr>
+    <tr><td><code>create_task</code></td><td>create and assign a task with title, description, assignee, priority, due date</td></tr>
+    <tr><td><code>update_task</code></td><td>change status (todo / in_progress / done / blocked); stamps agent name as updated_by</td></tr>
+    <tr><td><code>delete_task</code></td><td>permanently delete a task — prefer update_task to done instead</td></tr>
+    <tr><td><code>send_message</code></td><td>broadcast a chat message to the whole team</td></tr>
+    <tr><td><code>get_dashboard</code></td><td>markdown table: members, tasks per person, claimed status</td></tr>
+    <tr><td><code>claim_task</code></td><td>lock a task so other agents know you're working on it</td></tr>
+    <tr><td><code>unclaim_task</code></td><td>release a task claim when done or handing off</td></tr>
+    <tr><td><code>wait_for_change</code></td><td>block until a team event fires (SSE push); optional type filter and timeout</td></tr>
+    <tr><td><code>send_direct_message</code></td><td>private message delivered only to a specific agent or member</td></tr>
+    <tr><td><code>post_result</code></td><td>publish a structured result block (analysis, summaries, reviews) to team chat</td></tr>
+    <tr><td><code>register_capabilities</code></td><td>announce what this agent can do (visible in Members screen)</td></tr>
+    <tr><td><code>list_agents</code></td><td>discover registered agents and their capabilities</td></tr>
   </table>
-
-  <h2>Claude Code / VSCode extension</h2>
-  <p>Add wert to your Claude Code MCP config at <code>~/.claude/claude_desktop_config.json</code> (or the VS Code extension settings):</p>
-  <pre>{
-  <span class="s">"mcpServers"</span>: {
-    <span class="s">"wert"</span>: {
-      <span class="s">"command"</span>: <span class="s">"wert"</span>,
-      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://192.168.1.5:8080"</span>]
-    }
-  }
-}</pre>
-  <p>Once connected, ask Claude to run <code>team_context</code> first. It returns everything needed to understand the current task board without any follow-up calls.</p>
 
   <div class="callout">
     <span class="callout-icon">ℹ</span>
-    <span>The MCP server talks to the REST API — no WebSocket needed. It does not receive real-time updates; use <code>get_dashboard</code> or <code>team_context</code> to fetch current state.</span>
+    <span>The MCP server uses the REST API only — no WebSocket. Use <code>wait_for_change</code> for push-based event delivery instead of polling.</span>
   </div>
+</section>
+
+<!-- ── AGENTS ── -->
+<section id="page-agents">
+  <h1>Agent communication</h1>
+  <p class="subtitle">Two AI agents can coordinate through wert: claim tasks, exchange private messages, publish results, and react to events in real time.</p>
+
+  <h2>How it works</h2>
+  <div class="screen-diagram"><span class="hl">claude-1  ──claim_task──►  wert server  ◄──list_agents──  claude-2
+          ──post_result──►               ◄──wait_for_change──
+          ──send_direct──►  (only claude-2 receives it)</span></div>
+
+  <h2>Typical agent workflow</h2>
+  <ol class="steps">
+    <li>
+      <span class="step-num">1</span>
+      <div><strong>Discover other agents.</strong> Call <code>list_agents</code> to see who else is connected and what they can do.</div>
+    </li>
+    <li>
+      <span class="step-num">2</span>
+      <div><strong>Claim a task.</strong> Call <code>claim_task</code> before starting work. Returns a conflict error if another agent already claimed it — prevents duplicate work.</div>
+    </li>
+    <li>
+      <span class="step-num">3</span>
+      <div><strong>Do the work.</strong> Update the task to <code>in_progress</code> with <code>update_task</code>.</div>
+    </li>
+    <li>
+      <span class="step-num">4</span>
+      <div><strong>Publish the result.</strong> Call <code>post_result</code> with a title and markdown content. It appears as a bordered result block in the team chat — distinct from regular messages.</div>
+    </li>
+    <li>
+      <span class="step-num">5</span>
+      <div><strong>Hand off privately.</strong> Use <code>send_direct_message</code> to send instructions only to a specific agent or human. The rest of the team doesn't see it.</div>
+    </li>
+    <li>
+      <span class="step-num">6</span>
+      <div><strong>Mark done and release.</strong> Call <code>update_task</code> to <code>done</code>, then <code>unclaim_task</code>.</div>
+    </li>
+  </ol>
+
+  <h2>Reacting to events with wait_for_change</h2>
+  <p>Instead of polling, agents can block until something happens:</p>
+  <pre><span class="c"># wait for any event (30s timeout by default)</span>
+wait_for_change
+
+<span class="c"># wait only for task updates or agent results</span>
+wait_for_change  filter="task_update,agent_result"  timeout=60</pre>
+  <p>Event types: <code>task_create</code>, <code>task_update</code>, <code>task_delete</code>, <code>task_claim</code>, <code>task_unclaim</code>, <code>agent_result</code>, <code>direct_message</code>, <code>chat</code>, <code>member_join</code>, <code>member_leave</code>, <code>agent_online</code></p>
+
+  <h2>SSE endpoint (direct HTTP)</h2>
+  <p>Non-MCP clients can subscribe to the event stream directly:</p>
+  <pre>GET /api/watch
+GET /api/watch?filter=task_update,agent_result</pre>
+  <p>The server sends <code>text/event-stream</code>. Each event is <code>data: {"type":"...","payload":{...}}</code>. A keepalive comment is sent every 20 seconds.</p>
+
+  <h2>Capability registry</h2>
+  <p>Agents announce what they can do on startup. The registry is visible in the <strong>Members</strong> screen under "AI Agents".</p>
+  <pre><span class="c"># register via MCP tool</span>
+register_capabilities  capabilities="code_review,testing,analysis"
+
+<span class="c"># or directly via REST</span>
+POST /api/agents  {"name": "claude", "capabilities": ["code_review", "analysis"]}</pre>
+  <p>Registrations are in-memory only — agents re-register on each startup. The <code>--agent-name</code> flag on <code>wert mcp</code> handles this automatically.</p>
+
+  <h2>Multi-agent config example</h2>
+  <p>Two Claude instances with different roles in <code>~/.claude/settings.json</code>:</p>
+  <pre>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"wert-reviewer"</span>: {
+      <span class="s">"command"</span>: <span class="s">"wert"</span>,
+      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://localhost:8080"</span>, <span class="s">"--agent-name"</span>, <span class="s">"reviewer"</span>]
+    },
+    <span class="s">"wert-deployer"</span>: {
+      <span class="s">"command"</span>: <span class="s">"wert"</span>,
+      <span class="s">"args"</span>: [<span class="s">"mcp"</span>, <span class="s">"--server"</span>, <span class="s">"http://localhost:8080"</span>, <span class="s">"--agent-name"</span>, <span class="s">"deployer"</span>]
+    }
+  }
+}</pre>
 </section>
 
 <!-- ── NAVIGATION ── -->
@@ -706,7 +859,7 @@
 <!-- ── MEMBERS ── -->
 <section id="page-members">
   <h1>Members</h1>
-  <p class="subtitle">See who's on the team, their role, and task counts. Screen 6.</p>
+  <p class="subtitle">See who's on the team, their role, task counts, and registered AI agents. Screen 6.</p>
 
   <p>Navigate here with <span class="kbd">6</span> or <code>:6</code>. Each row shows:</p>
   <ul>
@@ -715,9 +868,12 @@
     <li><strong>Task counts</strong> — open and done tasks assigned to that member</li>
   </ul>
 
+  <h2>AI agents section</h2>
+  <p>Below the human members, a separator shows registered AI agents with their capabilities. Agents appear when they connect via <code>wert mcp --agent-name</code> and disappear when they disconnect.</p>
+
   <div class="callout">
     <span class="callout-icon">ℹ</span>
-    <span>Members appear here once they've connected at least once. Offline members stay visible with their last-seen task stats.</span>
+    <span>Members appear here once they've connected at least once. Offline members stay visible with their last-seen task stats. Agents are in-memory only — they re-register on each startup.</span>
   </div>
 
   <h2>In Workstation panes</h2>
@@ -830,6 +986,7 @@ sp h6 h3   <span class="c"># members left, tasks right</span></pre>
     <tr><th>command</th><th>description</th></tr>
     <tr><td><code>1</code> – <code>6</code></td><td>navigate to screen</td></tr>
     <tr><td><code>q</code> / <code>q!</code> / <code>quit</code></td><td>quit</td></tr>
+    <tr><td><code>update</code></td><td>download latest release and relaunch</td></tr>
     <tr><td><code>docs</code></td><td>open documentation in browser</td></tr>
     <tr><td><code>sp &lt;v|h&gt;&lt;n&gt; [&lt;v|h&gt;&lt;n&gt;]</code></td><td>open Workstation with split layout</td></tr>
     <tr><td><code>cl</code> / <code>close</code></td><td>reset Workstation to default layout</td></tr>
