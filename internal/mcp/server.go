@@ -696,15 +696,19 @@ Use this for agent-to-agent task handoffs, private instructions, or sensitive fe
 			mcp.WithDescription(`Post a structured AI result to the team chat.
 Results appear in a distinct format that separates agent output from regular chat.
 Use this to publish analysis, summaries, code reviews, or any structured output.
-Optionally associate the result with a specific task ID.`),
+Optionally associate the result with a specific task ID.
+If this result is a step in an autonomous pipeline run, pass the pipeline_run_id — the server
+will automatically forward the result to the next agent in the pipeline.`),
 			mcp.WithString("content", mcp.Required(), mcp.Description("The result content (markdown supported)")),
 			mcp.WithString("title", mcp.Description("Short title for the result (default: 'Result')")),
 			mcp.WithString("task_id", mcp.Description("Associate this result with a task short ID")),
+			mcp.WithString("pipeline_run_id", mcp.Description("Pipeline run ID received in the step DM — triggers automatic advance to the next agent")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			content, _ := req.Params.Arguments["content"].(string)
 			title, _ := req.Params.Arguments["title"].(string)
 			taskID, _ := req.Params.Arguments["task_id"].(string)
+			runID, _ := req.Params.Arguments["pipeline_run_id"].(string)
 			if content == "" {
 				return nil, fmt.Errorf("content is required")
 			}
@@ -712,16 +716,21 @@ Optionally associate the result with a specific task ID.`),
 				title = "Result"
 			}
 			payload := map[string]string{
-				"agent":   w.agentID(),
-				"task_id": taskID,
-				"title":   title,
-				"content": content,
+				"agent":           w.agentID(),
+				"task_id":         taskID,
+				"title":           title,
+				"content":         content,
+				"pipeline_run_id": runID,
 			}
 			_, err := w.post("/api/results", payload)
 			if err != nil {
 				return nil, fmt.Errorf("posting result: %w", err)
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("Result posted: %q (%d chars)", title, len(content))), nil
+			msg := fmt.Sprintf("Result posted: %q (%d chars)", title, len(content))
+			if runID != "" {
+				msg += fmt.Sprintf("\nPipeline run %s advanced to next step.", runID[:8])
+			}
+			return mcp.NewToolResultText(msg), nil
 		},
 	)
 
@@ -1113,10 +1122,10 @@ Example: "review-deploy" with steps ["reviewer", "deployer"].`),
 	s.AddTool(
 		mcp.NewTool("trigger_pipeline",
 			mcp.WithDescription(`Trigger a registered pipeline for a task.
-Sends a direct message to the first agent in the pipeline with the task ID and context.
-Broadcasts a pipeline_event so all agents can observe the pipeline start.
-The first agent should complete their step and then either trigger the next step manually
-or use send_direct_message to hand off to the next agent in the pipeline.`),
+Creates an autonomous pipeline run: each agent receives a DM with the run_id and previous
+result, then automatically advances to the next agent when it calls post_result with that run_id.
+No manual handoff needed — the server orchestrates the full chain.
+Returns the run_id which agents use in post_result to advance the run.`),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Pipeline name to trigger")),
 			mcp.WithString("task_id", mcp.Description("Task ID associated with this pipeline run")),
 			mcp.WithString("context", mcp.Description("Context to pass to the first agent")),
@@ -1139,14 +1148,87 @@ or use send_direct_message to hand off to the next agent in the pipeline.`),
 			}
 			var result struct {
 				Pipeline   string `json:"pipeline"`
+				RunID      string `json:"run_id"`
 				Steps      int    `json:"steps"`
 				FirstAgent string `json:"first_agent"`
 			}
 			if err := json.Unmarshal(body, &result); err != nil {
 				return mcp.NewToolResultText(fmt.Sprintf("Pipeline %q triggered.", name)), nil
 			}
-			return mcp.NewToolResultText(fmt.Sprintf("Pipeline %q triggered (%d steps). First agent: %s.",
-				result.Pipeline, result.Steps, result.FirstAgent)), nil
+			return mcp.NewToolResultText(fmt.Sprintf(
+				"Pipeline %q triggered — run_id: %s\n%d steps, starting with %s.\nAgents must call post_result with pipeline_run_id=%s to auto-advance.",
+				result.Pipeline, result.RunID, result.Steps, result.FirstAgent, result.RunID,
+			)), nil
+		},
+	)
+
+	// ── get_pipeline_run ──────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("get_pipeline_run",
+			mcp.WithDescription(`Get the current state of a pipeline run: which step it's on, status, and step results so far.`),
+			mcp.WithString("run_id", mcp.Required(), mcp.Description("Pipeline run ID returned by trigger_pipeline")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			runID, _ := req.Params.Arguments["run_id"].(string)
+			if runID == "" {
+				return nil, fmt.Errorf("run_id is required")
+			}
+			body, err := w.get("/api/pipeline-runs/" + runID)
+			if err != nil {
+				return nil, fmt.Errorf("fetching run: %w", err)
+			}
+			var run struct {
+				ID          string   `json:"id"`
+				Pipeline    string   `json:"pipeline"`
+				Steps       []string `json:"steps"`
+				CurrentStep int      `json:"current_step"`
+				Status      string   `json:"status"`
+				TaskID      string   `json:"task_id"`
+				StepResults []string `json:"step_results"`
+				StartedBy   string   `json:"started_by"`
+			}
+			if err := json.Unmarshal(body, &run); err != nil {
+				return nil, fmt.Errorf("parsing run: %w", err)
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Pipeline run: %s\n\n", run.ID))
+			sb.WriteString(fmt.Sprintf("Pipeline: %s\n", run.Pipeline))
+			sb.WriteString(fmt.Sprintf("Status:   %s\n", strings.ToUpper(run.Status)))
+			sb.WriteString(fmt.Sprintf("Progress: step %d/%d\n", run.CurrentStep, len(run.Steps)))
+			if run.TaskID != "" {
+				sb.WriteString(fmt.Sprintf("Task:     %s\n", run.TaskID))
+			}
+			sb.WriteString(fmt.Sprintf("Steps:    %s\n\n", strings.Join(run.Steps, " → ")))
+			if len(run.StepResults) > 0 {
+				sb.WriteString("Completed steps:\n")
+				for i, res := range run.StepResults {
+					preview := res
+					if len(preview) > 100 {
+						preview = preview[:100] + "..."
+					}
+					sb.WriteString(fmt.Sprintf("  [%d] %s: %s\n", i+1, run.Steps[i], preview))
+				}
+			}
+			return mcp.NewToolResultText(sb.String()), nil
+		},
+	)
+
+	// ── cancel_pipeline_run ───────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("cancel_pipeline_run",
+			mcp.WithDescription(`Cancel an active pipeline run. No further agents will be invoked after cancellation.`),
+			mcp.WithString("run_id", mcp.Required(), mcp.Description("Pipeline run ID to cancel")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			runID, _ := req.Params.Arguments["run_id"].(string)
+			if runID == "" {
+				return nil, fmt.Errorf("run_id is required")
+			}
+			_, err := w.post("/api/pipeline-runs/"+runID+"/cancel", map[string]string{})
+			if err != nil {
+				return nil, fmt.Errorf("cancelling run: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Pipeline run %s cancelled.", runID[:8])), nil
 		},
 	)
 

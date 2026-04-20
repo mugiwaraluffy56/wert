@@ -53,6 +53,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/context", s.handleAPIContext)
 	s.mux.HandleFunc("/api/pipelines", s.handleAPIPipelines)
 	s.mux.HandleFunc("/api/pipelines/", s.handleAPIPipelineByName)
+	s.mux.HandleFunc("/api/pipeline-runs", s.handleAPIPipelineRuns)
+	s.mux.HandleFunc("/api/pipeline-runs/", s.handleAPIPipelineRunByID)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
@@ -575,16 +577,18 @@ func (s *Server) handleAPIDirect(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAPIResults posts a structured AI result to the team.
+// If pipeline_run_id is set, the server automatically advances the pipeline run.
 func (s *Server) handleAPIResults(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
-		Agent   string `json:"agent"`
-		TaskID  string `json:"task_id"`
-		Title   string `json:"title"`
-		Content string `json:"content"`
+		Agent         string `json:"agent"`
+		TaskID        string `json:"task_id"`
+		Title         string `json:"title"`
+		Content       string `json:"content"`
+		PipelineRunID string `json:"pipeline_run_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
 		http.Error(w, "content required", http.StatusBadRequest)
@@ -598,15 +602,48 @@ func (s *Server) handleAPIResults(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := s.hub.store.AddAgentMessage(body.Agent, body.Content, "result", body.Title)
 	p := protocol.AgentResultPayload{
-		Agent:     body.Agent,
-		TaskID:    body.TaskID,
-		Title:     body.Title,
-		Content:   body.Content,
-		Timestamp: msg.Timestamp,
-		MessageID: msg.ID,
+		Agent:         body.Agent,
+		TaskID:        body.TaskID,
+		Title:         body.Title,
+		Content:       body.Content,
+		Timestamp:     msg.Timestamp,
+		MessageID:     msg.ID,
+		PipelineRunID: body.PipelineRunID,
 	}
 	data, _ := protocol.NewEnvelope(protocol.MsgAgentResult, p)
 	s.hub.Broadcast(data)
+
+	// Auto-advance pipeline if this result belongs to a run.
+	if body.PipelineRunID != "" {
+		nextAgent, done, run, ok := s.hub.store.AdvancePipelineRun(body.PipelineRunID, body.Content)
+		if ok {
+			event := "advanced"
+			if done {
+				event = "done"
+			} else {
+				// DM the next agent with full context.
+				stepNum := run.CurrentStep + 1 // 1-indexed for display
+				dmContent := fmt.Sprintf("[Pipeline: %s  run:%s]\nStep %d/%d — task: %s\n\nPrevious result from %s:\n%s",
+					run.Pipeline, run.ID[:8], stepNum, len(run.Steps), run.TaskID, body.Agent, body.Content)
+				dmMsg := s.hub.store.AddAgentMessage(body.Agent, dmContent, "dm", nextAgent)
+				dmPayload := protocol.DirectMsgPayload{
+					ID:        dmMsg.ID,
+					From:      body.Agent,
+					To:        nextAgent,
+					Content:   dmContent,
+					Timestamp: dmMsg.Timestamp,
+					IsAgent:   true,
+				}
+				if dmData, err := protocol.NewEnvelope(protocol.MsgDirectMsg, dmPayload); err == nil {
+					s.hub.sendDirect(nextAgent, dmData)
+				}
+			}
+			if runData, err := protocol.NewEnvelope(protocol.MsgPipelineRun, protocol.PipelineRunPayload{Run: run, Event: event}); err == nil {
+				s.hub.Broadcast(runData)
+			}
+		}
+	}
+
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]string{"id": uuid.New().String(), "message_id": msg.ID})
 }
@@ -763,11 +800,14 @@ func (s *Server) handleAPIPipelineTrigger(w http.ResponseWriter, r *http.Request
 		body.TriggeredBy = "agent"
 	}
 
-	// Send DM to first agent in the pipeline.
+	// Create a run record.
+	run := s.hub.store.CreatePipelineRun(name, pl.Steps, body.TaskID, body.TriggeredBy)
+
+	// DM first agent with run context.
 	if len(pl.Steps) > 0 {
 		firstAgent := pl.Steps[0]
-		content := fmt.Sprintf("[Pipeline: %s] Step 1/%d — task: %s. Context: %s",
-			name, len(pl.Steps), body.TaskID, body.Context)
+		content := fmt.Sprintf("[Pipeline: %s  run:%s]\nStep 1/%d — task: %s\n\n%s",
+			name, run.ID[:8], len(pl.Steps), body.TaskID, body.Context)
 		msg := s.hub.store.AddAgentMessage(body.TriggeredBy, content, "dm", firstAgent)
 		dmPayload := protocol.DirectMsgPayload{
 			ID:        msg.ID,
@@ -782,26 +822,67 @@ func (s *Server) handleAPIPipelineTrigger(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Broadcast pipeline triggered event.
-	evtPayload := protocol.PipelineEventPayload{
-		Name:   name,
-		Agent:  pl.Steps[0],
-		TaskID: body.TaskID,
-		Event:  "triggered",
-		Step:   1,
-		Total:  len(pl.Steps),
-	}
-	if data, err := protocol.NewEnvelope(protocol.MsgPipelineEvent, evtPayload); err == nil {
+	// Broadcast run started.
+	if data, err := protocol.NewEnvelope(protocol.MsgPipelineRun, protocol.PipelineRunPayload{Run: run, Event: "started"}); err == nil {
 		s.hub.Broadcast(data)
 	}
 
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]interface{}{
 		"pipeline":    name,
+		"run_id":      run.ID,
 		"task_id":     body.TaskID,
 		"steps":       len(pl.Steps),
 		"first_agent": pl.Steps[0],
 	})
+}
+
+// handleAPIPipelineRuns lists all active pipeline runs.
+func (s *Server) handleAPIPipelineRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, s.hub.store.ListPipelineRuns())
+}
+
+// handleAPIPipelineRunByID handles GET and POST /cancel for a specific run.
+func (s *Server) handleAPIPipelineRunByID(w http.ResponseWriter, r *http.Request) {
+	rest := r.URL.Path[len("/api/pipeline-runs/"):]
+	parts := strings.SplitN(rest, "/", 2)
+	runID := parts[0]
+	if runID == "" {
+		http.Error(w, "missing run id", http.StatusBadRequest)
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "cancel" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		run, ok := s.hub.store.CancelPipelineRun(runID)
+		if !ok {
+			http.Error(w, "run not found or already finished", http.StatusNotFound)
+			return
+		}
+		if data, err := protocol.NewEnvelope(protocol.MsgPipelineRun, protocol.PipelineRunPayload{Run: run, Event: "cancelled"}); err == nil {
+			s.hub.Broadcast(data)
+		}
+		writeJSON(w, run)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	run, ok := s.hub.store.GetPipelineRun(runID)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, run)
 }
 
 // ---- helpers ----

@@ -2443,6 +2443,46 @@ func (m Model) applyEnvelope(env protocol.Envelope) Model {
 		}
 		m.statusMsg = fmt.Sprintf("* pipeline %q %s (step %d/%d → %s)", p.Name, p.Event, p.Step, p.Total, p.Agent)
 
+	case protocol.MsgPipelineRun:
+		var p protocol.PipelineRunPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		run := p.Run
+		shortID := run.ID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		var label string
+		switch p.Event {
+		case "started":
+			label = fmt.Sprintf("[pipeline:%s] %s started — %d steps: %s", shortID, run.Pipeline, len(run.Steps), strings.Join(run.Steps, " → "))
+		case "advanced":
+			label = fmt.Sprintf("[pipeline:%s] step %d/%d done → %s", shortID, run.CurrentStep, len(run.Steps), run.Steps[run.CurrentStep])
+		case "done":
+			label = fmt.Sprintf("[pipeline:%s] %s complete ✓ (%d steps)", shortID, run.Pipeline, len(run.Steps))
+		case "cancelled":
+			label = fmt.Sprintf("[pipeline:%s] %s cancelled at step %d/%d", shortID, run.Pipeline, run.CurrentStep, len(run.Steps))
+		case "failed":
+			label = fmt.Sprintf("[pipeline:%s] %s failed at step %d/%d", shortID, run.Pipeline, run.CurrentStep, len(run.Steps))
+		default:
+			label = fmt.Sprintf("[pipeline:%s] %s %s", shortID, run.Pipeline, p.Event)
+		}
+		msg := &protocol.ChatMessage{
+			ID:        run.ID + "-run-" + p.Event,
+			From:      "pipeline",
+			Content:   label,
+			Timestamp: run.UpdatedAt,
+			IsAgent:   true,
+			Kind:      "pipeline",
+			Meta:      run.Pipeline,
+		}
+		m.messages = append(m.messages, msg)
+		m.statusMsg = "* " + label
+		if m.screen != scrChat {
+			m.unreadChat++
+		}
+
 	case protocol.MsgAgentOnline:
 		var p protocol.AgentOnlinePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {

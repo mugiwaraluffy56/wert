@@ -36,6 +36,7 @@ const (
 	MsgAgentHandoff   MessageType = "agent_handoff"   // task handed off between agents
 	MsgResultReaction MessageType = "result_reaction" // reaction to an agent result
 	MsgPipelineEvent  MessageType = "pipeline_event"  // pipeline triggered or advanced
+	MsgPipelineRun    MessageType = "pipeline_run"    // pipeline run state change
 )
 
 type TaskStatus string
@@ -68,6 +69,20 @@ type ResultReaction struct {
 type PipelineInfo struct {
 	Name  string   `json:"name"`
 	Steps []string `json:"steps"` // ordered list of agent names
+}
+
+// PipelineRun tracks the state of an active pipeline execution.
+type PipelineRun struct {
+	ID          string    `json:"id"`
+	Pipeline    string    `json:"pipeline"`
+	Steps       []string  `json:"steps"`
+	CurrentStep int       `json:"current_step"` // 0-indexed; == len(steps) when done
+	Status      string    `json:"status"`        // "running" | "done" | "failed" | "cancelled"
+	TaskID      string    `json:"task_id,omitempty"`
+	StepResults []string  `json:"step_results,omitempty"`
+	StartedBy   string    `json:"started_by"`
+	StartedAt   time.Time `json:"started_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Task struct {
@@ -186,12 +201,13 @@ type TaskClaimPayload struct {
 }
 
 type AgentResultPayload struct {
-	Agent     string    `json:"agent"`
-	TaskID    string    `json:"task_id,omitempty"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-	MessageID string    `json:"message_id,omitempty"` // stored ChatMessage ID, for reactions
+	Agent         string    `json:"agent"`
+	TaskID        string    `json:"task_id,omitempty"`
+	Title         string    `json:"title"`
+	Content       string    `json:"content"`
+	Timestamp     time.Time `json:"timestamp"`
+	MessageID     string    `json:"message_id,omitempty"`      // stored ChatMessage ID, for reactions
+	PipelineRunID string    `json:"pipeline_run_id,omitempty"` // if part of an autonomous pipeline run
 }
 
 type DirectMsgPayload struct {
@@ -234,4 +250,9 @@ type PipelineEventPayload struct {
 	Event  string `json:"event"` // "triggered" | "done"
 	Step   int    `json:"step"`
 	Total  int    `json:"total"`
+}
+
+type PipelineRunPayload struct {
+	Run   PipelineRun `json:"run"`
+	Event string      `json:"event"` // "started" | "advanced" | "done" | "failed" | "cancelled"
 }

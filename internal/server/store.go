@@ -17,16 +17,49 @@ type pipeline struct {
 	Steps []string
 }
 
+type pipelineRun struct {
+	ID          string
+	Pipeline    string
+	Steps       []string
+	CurrentStep int    // index of the step currently executing
+	Status      string // "running" | "done" | "failed" | "cancelled"
+	TaskID      string
+	StepResults []string
+	StartedBy   string
+	StartedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (r *pipelineRun) toProtocol() protocol.PipelineRun {
+	results := make([]string, len(r.StepResults))
+	copy(results, r.StepResults)
+	steps := make([]string, len(r.Steps))
+	copy(steps, r.Steps)
+	return protocol.PipelineRun{
+		ID:          r.ID,
+		Pipeline:    r.Pipeline,
+		Steps:       steps,
+		CurrentStep: r.CurrentStep,
+		Status:      r.Status,
+		TaskID:      r.TaskID,
+		StepResults: results,
+		StartedBy:   r.StartedBy,
+		StartedAt:   r.StartedAt,
+		UpdatedAt:   r.UpdatedAt,
+	}
+}
+
 type Store struct {
-	mu         sync.RWMutex
-	tasks      map[string]*protocol.Task
-	messages   []*protocol.ChatMessage
-	members    map[string]*protocol.Member
-	approved   map[string]bool
-	agents     map[string]*protocol.AgentInfo // registered AI agents (not persisted)
-	scratchpad map[string]string              // shared key-value store for agents
-	pipelines  map[string]*pipeline           // registered agent pipelines (not persisted)
-	dataFile   string
+	mu           sync.RWMutex
+	tasks        map[string]*protocol.Task
+	messages     []*protocol.ChatMessage
+	members      map[string]*protocol.Member
+	approved     map[string]bool
+	agents       map[string]*protocol.AgentInfo // registered AI agents (not persisted)
+	scratchpad   map[string]string              // shared key-value store for agents
+	pipelines    map[string]*pipeline           // registered agent pipelines (not persisted)
+	pipelineRuns map[string]*pipelineRun        // active pipeline run state (not persisted)
+	dataFile     string
 }
 
 type diskData struct {
@@ -38,14 +71,15 @@ type diskData struct {
 
 func NewStore(dataFile string) *Store {
 	s := &Store{
-		tasks:      make(map[string]*protocol.Task),
-		messages:   make([]*protocol.ChatMessage, 0),
-		members:    make(map[string]*protocol.Member),
-		approved:   make(map[string]bool),
-		agents:     make(map[string]*protocol.AgentInfo),
-		scratchpad: make(map[string]string),
-		pipelines:  make(map[string]*pipeline),
-		dataFile:   dataFile,
+		tasks:        make(map[string]*protocol.Task),
+		messages:     make([]*protocol.ChatMessage, 0),
+		members:      make(map[string]*protocol.Member),
+		approved:     make(map[string]bool),
+		agents:       make(map[string]*protocol.AgentInfo),
+		scratchpad:   make(map[string]string),
+		pipelines:    make(map[string]*pipeline),
+		pipelineRuns: make(map[string]*pipelineRun),
+		dataFile:     dataFile,
 	}
 	s.load()
 	return s
@@ -520,6 +554,91 @@ func (s *Store) DeletePipeline(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.pipelines, name)
+}
+
+// ---- Pipeline Runs ----
+
+func (s *Store) CreatePipelineRun(pipelineName string, steps []string, taskID, startedBy string) protocol.PipelineRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := &pipelineRun{
+		ID:          uuid.New().String(),
+		Pipeline:    pipelineName,
+		Steps:       steps,
+		CurrentStep: 0,
+		Status:      "running",
+		TaskID:      taskID,
+		StepResults: []string{},
+		StartedBy:   startedBy,
+		StartedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	s.pipelineRuns[r.ID] = r
+	return r.toProtocol()
+}
+
+func (s *Store) GetPipelineRun(id string) (protocol.PipelineRun, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.pipelineRuns[id]
+	if !ok {
+		return protocol.PipelineRun{}, false
+	}
+	return r.toProtocol(), true
+}
+
+// AdvancePipelineRun appends stepResult for the completed step and advances to the next.
+// Returns (nextAgent, isDone, run, ok). nextAgent is "" when isDone is true.
+func (s *Store) AdvancePipelineRun(id, stepResult string) (nextAgent string, done bool, run protocol.PipelineRun, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, exists := s.pipelineRuns[id]
+	if !exists || r.Status != "running" {
+		return "", false, protocol.PipelineRun{}, false
+	}
+	r.StepResults = append(r.StepResults, stepResult)
+	r.CurrentStep++
+	r.UpdatedAt = time.Now()
+	if r.CurrentStep >= len(r.Steps) {
+		r.Status = "done"
+		return "", true, r.toProtocol(), true
+	}
+	return r.Steps[r.CurrentStep], false, r.toProtocol(), true
+}
+
+func (s *Store) CancelPipelineRun(id string) (protocol.PipelineRun, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.pipelineRuns[id]
+	if !ok {
+		return protocol.PipelineRun{}, false
+	}
+	r.Status = "cancelled"
+	r.UpdatedAt = time.Now()
+	return r.toProtocol(), true
+}
+
+func (s *Store) FailPipelineRun(id string) (protocol.PipelineRun, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.pipelineRuns[id]
+	if !ok {
+		return protocol.PipelineRun{}, false
+	}
+	r.Status = "failed"
+	r.UpdatedAt = time.Now()
+	return r.toProtocol(), true
+}
+
+func (s *Store) ListPipelineRuns() []protocol.PipelineRun {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]protocol.PipelineRun, 0, len(s.pipelineRuns))
+	for _, r := range s.pipelineRuns {
+		out = append(out, r.toProtocol())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
+	return out
 }
 
 // ---- Approval ----
