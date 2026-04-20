@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,30 +12,40 @@ import (
 	"wert/internal/protocol"
 )
 
+type pipeline struct {
+	Name  string
+	Steps []string
+}
+
 type Store struct {
-	mu       sync.RWMutex
-	tasks    map[string]*protocol.Task
-	messages []*protocol.ChatMessage
-	members  map[string]*protocol.Member
-	approved map[string]bool
-	agents   map[string]*protocol.AgentInfo // registered AI agents (not persisted)
-	dataFile string
+	mu         sync.RWMutex
+	tasks      map[string]*protocol.Task
+	messages   []*protocol.ChatMessage
+	members    map[string]*protocol.Member
+	approved   map[string]bool
+	agents     map[string]*protocol.AgentInfo // registered AI agents (not persisted)
+	scratchpad map[string]string              // shared key-value store for agents
+	pipelines  map[string]*pipeline           // registered agent pipelines (not persisted)
+	dataFile   string
 }
 
 type diskData struct {
 	Tasks         []*protocol.Task        `json:"tasks"`
 	Messages      []*protocol.ChatMessage `json:"messages"`
 	ApprovedUsers []string               `json:"approved_users,omitempty"`
+	Scratchpad    map[string]string      `json:"scratchpad,omitempty"`
 }
 
 func NewStore(dataFile string) *Store {
 	s := &Store{
-		tasks:    make(map[string]*protocol.Task),
-		messages: make([]*protocol.ChatMessage, 0),
-		members:  make(map[string]*protocol.Member),
-		approved: make(map[string]bool),
-		agents:   make(map[string]*protocol.AgentInfo),
-		dataFile: dataFile,
+		tasks:      make(map[string]*protocol.Task),
+		messages:   make([]*protocol.ChatMessage, 0),
+		members:    make(map[string]*protocol.Member),
+		approved:   make(map[string]bool),
+		agents:     make(map[string]*protocol.AgentInfo),
+		scratchpad: make(map[string]string),
+		pipelines:  make(map[string]*pipeline),
+		dataFile:   dataFile,
 	}
 	s.load()
 	return s
@@ -58,6 +69,9 @@ func (s *Store) load() {
 	for _, u := range dd.ApprovedUsers {
 		s.approved[u] = true
 	}
+	if dd.Scratchpad != nil {
+		s.scratchpad = dd.Scratchpad
+	}
 }
 
 func (s *Store) persist() {
@@ -73,7 +87,12 @@ func (s *Store) persist() {
 	for u := range s.approved {
 		approved = append(approved, u)
 	}
-	dd := diskData{Tasks: tasks, Messages: msgs, ApprovedUsers: approved}
+	dd := diskData{
+		Tasks:         tasks,
+		Messages:      msgs,
+		ApprovedUsers: approved,
+		Scratchpad:    s.scratchpad,
+	}
 	data, err := json.MarshalIndent(dd, "", "  ")
 	if err != nil {
 		return
@@ -114,7 +133,8 @@ func (s *Store) UpdateTaskStatus(taskID string, status protocol.TaskStatus, upda
 	t.UpdatedAt = time.Now()
 	t.UpdatedBy = updatedBy
 	go s.persist()
-	return t, true
+	cp := *t
+	return &cp, true
 }
 
 func (s *Store) DeleteTask(taskID string) bool {
@@ -134,6 +154,16 @@ func (s *Store) GetTasks() []*protocol.Task {
 	tasks := make([]*protocol.Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
 		cp := *t
+		if cp.Comments != nil {
+			cps := make([]protocol.TaskComment, len(cp.Comments))
+			copy(cps, cp.Comments)
+			cp.Comments = cps
+		}
+		if cp.Dependencies != nil {
+			deps := make([]string, len(cp.Dependencies))
+			copy(deps, cp.Dependencies)
+			cp.Dependencies = deps
+		}
 		tasks = append(tasks, &cp)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
@@ -148,15 +178,108 @@ func (s *Store) GetTaskByPrefix(prefix string) *protocol.Task {
 	for id, t := range s.tasks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			cp := *t
+			if cp.Comments != nil {
+				cps := make([]protocol.TaskComment, len(cp.Comments))
+				copy(cps, cp.Comments)
+				cp.Comments = cps
+			}
+			if cp.Dependencies != nil {
+				deps := make([]string, len(cp.Dependencies))
+				copy(deps, cp.Dependencies)
+				cp.Dependencies = deps
+			}
 			return &cp
 		}
 	}
 	return nil
 }
 
+// AddTaskComment appends a comment to a task identified by full ID. Returns the comment and ok.
+func (s *Store) AddTaskComment(taskID, author, content string, isAgent bool) (*protocol.TaskComment, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return nil, false
+	}
+	c := protocol.TaskComment{
+		ID:        uuid.New().String(),
+		TaskID:    taskID,
+		Author:    author,
+		Content:   content,
+		Timestamp: time.Now(),
+		IsAgent:   isAgent,
+	}
+	t.Comments = append(t.Comments, c)
+	t.UpdatedAt = time.Now()
+	go s.persist()
+	cp := c
+	return &cp, true
+}
+
+// AddTaskDependency adds a dependency to a task (both looked up by prefix). Returns updated task.
+func (s *Store) AddTaskDependency(taskPrefix, depPrefix string) (*protocol.Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var task, dep *protocol.Task
+	for id, t := range s.tasks {
+		if len(id) >= len(taskPrefix) && id[:len(taskPrefix)] == taskPrefix {
+			task = t
+		}
+		if len(id) >= len(depPrefix) && id[:len(depPrefix)] == depPrefix {
+			dep = t
+		}
+	}
+	if task == nil || dep == nil {
+		return nil, false
+	}
+	// Avoid duplicate.
+	for _, d := range task.Dependencies {
+		if d == dep.ID {
+			cp := *task
+			return &cp, true
+		}
+	}
+	task.Dependencies = append(task.Dependencies, dep.ID)
+	task.UpdatedAt = time.Now()
+	go s.persist()
+	cp := *task
+	return &cp, true
+}
+
+// RemoveTaskDependency removes a dependency from a task (both looked up by prefix).
+func (s *Store) RemoveTaskDependency(taskPrefix, depPrefix string) (*protocol.Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var task *protocol.Task
+	var depID string
+	for id, t := range s.tasks {
+		if len(id) >= len(taskPrefix) && id[:len(taskPrefix)] == taskPrefix {
+			task = t
+		}
+		if len(id) >= len(depPrefix) && id[:len(depPrefix)] == depPrefix {
+			depID = id
+		}
+	}
+	if task == nil {
+		return nil, false
+	}
+	filtered := task.Dependencies[:0]
+	for _, d := range task.Dependencies {
+		if d != depID {
+			filtered = append(filtered, d)
+		}
+	}
+	task.Dependencies = filtered
+	task.UpdatedAt = time.Now()
+	go s.persist()
+	cp := *task
+	return &cp, true
+}
+
 // ---- Messages ----
 
-func (s *Store) AddMessage(from, content string) *protocol.ChatMessage {
+func (s *Store) AddMessage(from, content, replyTo, replyFrom string) *protocol.ChatMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	msg := &protocol.ChatMessage{
@@ -164,6 +287,8 @@ func (s *Store) AddMessage(from, content string) *protocol.ChatMessage {
 		From:      from,
 		Content:   content,
 		Timestamp: time.Now(),
+		ReplyTo:   replyTo,
+		ReplyFrom: replyFrom,
 	}
 	s.messages = append(s.messages, msg)
 	go s.persist()
@@ -200,6 +325,45 @@ func (s *Store) RecentMessages(n int) []*protocol.ChatMessage {
 	return out
 }
 
+// AddReaction adds or updates a reaction on a message. Returns false if message not found.
+func (s *Store) AddReaction(msgID, reactor, reaction string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, msg := range s.messages {
+		if msg.ID == msgID {
+			for i, r := range msg.Reactions {
+				if r.Reactor == reactor {
+					msg.Reactions[i].Reaction = reaction
+					msg.Reactions[i].At = time.Now()
+					go s.persist()
+					return true
+				}
+			}
+			msg.Reactions = append(msg.Reactions, protocol.ResultReaction{
+				Reactor:  reactor,
+				Reaction: reaction,
+				At:       time.Now(),
+			})
+			go s.persist()
+			return true
+		}
+	}
+	return false
+}
+
+// GetMessageByPrefix returns the first message whose ID starts with prefix.
+func (s *Store) GetMessageByPrefix(prefix string) *protocol.ChatMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, msg := range s.messages {
+		if strings.HasPrefix(msg.ID, prefix) {
+			cp := *msg
+			return &cp
+		}
+	}
+	return nil
+}
+
 // ---- Members ----
 
 func (s *Store) SetOnline(username, role string, online bool) {
@@ -223,7 +387,7 @@ func (s *Store) ClaimTask(prefix, agent string) (*protocol.Task, bool) {
 	for id, t := range s.tasks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			if t.ClaimedBy != "" && t.ClaimedBy != agent {
-				return nil, false // already claimed by someone else
+				return nil, false
 			}
 			t.ClaimedBy = agent
 			t.UpdatedAt = time.Now()
@@ -241,7 +405,7 @@ func (s *Store) UnclaimTask(prefix, agent string) (*protocol.Task, bool) {
 	for id, t := range s.tasks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			if t.ClaimedBy != "" && t.ClaimedBy != agent {
-				return nil, false // can only unclaim your own
+				return nil, false
 			}
 			t.ClaimedBy = ""
 			t.UpdatedAt = time.Now()
@@ -252,6 +416,8 @@ func (s *Store) UnclaimTask(prefix, agent string) (*protocol.Task, bool) {
 	}
 	return nil, false
 }
+
+// ---- Agents ----
 
 func (s *Store) RegisterAgent(name string, caps []string) *protocol.AgentInfo {
 	s.mu.Lock()
@@ -286,6 +452,77 @@ func (s *Store) GetAgents() []*protocol.AgentInfo {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// ---- Scratchpad ----
+
+func (s *Store) SetScratchpad(key, value string) {
+	s.mu.Lock()
+	s.scratchpad[key] = value
+	s.mu.Unlock()
+	go s.persist()
+}
+
+func (s *Store) GetScratchpad(key string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.scratchpad[key]
+	return v, ok
+}
+
+func (s *Store) DeleteScratchpad(key string) {
+	s.mu.Lock()
+	delete(s.scratchpad, key)
+	s.mu.Unlock()
+	go s.persist()
+}
+
+func (s *Store) GetAllScratchpad() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]string, len(s.scratchpad))
+	for k, v := range s.scratchpad {
+		out[k] = v
+	}
+	return out
+}
+
+// ---- Pipelines ----
+
+func (s *Store) RegisterPipeline(name string, steps []string) *protocol.PipelineInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pipelines[name] = &pipeline{Name: name, Steps: steps}
+	return &protocol.PipelineInfo{Name: name, Steps: steps}
+}
+
+func (s *Store) GetPipeline(name string) (*protocol.PipelineInfo, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.pipelines[name]
+	if !ok {
+		return nil, false
+	}
+	return &protocol.PipelineInfo{Name: p.Name, Steps: p.Steps}, true
+}
+
+func (s *Store) ListPipelines() []*protocol.PipelineInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*protocol.PipelineInfo, 0, len(s.pipelines))
+	for _, p := range s.pipelines {
+		out = append(out, &protocol.PipelineInfo{Name: p.Name, Steps: p.Steps})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (s *Store) DeletePipeline(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pipelines, name)
+}
+
+// ---- Approval ----
 
 func (s *Store) IsApproved(username string) bool {
 	s.mu.RLock()

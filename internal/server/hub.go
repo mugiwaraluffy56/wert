@@ -279,7 +279,7 @@ func (h *Hub) handleEnvelope(c *client, env protocol.Envelope) {
 			return
 		}
 		p.Message.From = c.username
-		msg := h.store.AddMessage(c.username, p.Message.Content)
+		msg := h.store.AddMessage(c.username, p.Message.Content, p.Message.ReplyTo, p.Message.ReplyFrom)
 		p.Message = *msg
 		data, err := protocol.NewEnvelope(protocol.MsgChat, p)
 		if err == nil {
@@ -438,6 +438,60 @@ func (h *Hub) handleEnvelope(c *client, env protocol.Envelope) {
 		select {
 		case c.send <- data:
 		default:
+		}
+
+	case protocol.MsgTaskComment:
+		if !c.registered {
+			return
+		}
+		var p protocol.TaskCommentPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return
+		}
+		// Find full task ID from prefix.
+		task := h.store.GetTaskByPrefix(p.Comment.TaskID)
+		if task == nil {
+			h.sendError(c, "task not found: "+p.Comment.TaskID)
+			return
+		}
+		comment, ok := h.store.AddTaskComment(task.ID, c.username, p.Comment.Content, false)
+		if !ok {
+			return
+		}
+		// Broadcast updated task so all clients see the new comment count.
+		updatedTask := h.store.GetTaskByPrefix(task.ID)
+		if updatedTask != nil {
+			if taskData, err := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *updatedTask}); err == nil {
+				h.Broadcast(taskData)
+			}
+		}
+		// Also broadcast the comment event.
+		p.Comment = *comment
+		if data, err := protocol.NewEnvelope(protocol.MsgTaskComment, p); err == nil {
+			h.Broadcast(data)
+		}
+
+	case protocol.MsgResultReaction:
+		if !c.registered {
+			return
+		}
+		var p protocol.ResultReactionPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return
+		}
+		p.Reactor = c.username
+		p.At = time.Now()
+		validReactions := map[string]bool{"approve": true, "ack": true, "reject": true}
+		if !validReactions[p.Reaction] {
+			h.sendError(c, "invalid reaction: use approve, ack, or reject")
+			return
+		}
+		if !h.store.AddReaction(p.MessageID, p.Reactor, p.Reaction) {
+			h.sendError(c, "message not found: "+p.MessageID)
+			return
+		}
+		if data, err := protocol.NewEnvelope(protocol.MsgResultReaction, p); err == nil {
+			h.Broadcast(data)
 		}
 	}
 }

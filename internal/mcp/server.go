@@ -32,17 +32,18 @@ func New(serverURL, agentName string) *WertMCP {
 
 // internal types for JSON parsing
 type task struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Assignee    string    `json:"assignee"`
-	Status      string    `json:"status"`
-	Priority    string    `json:"priority"`
-	DueDate     string    `json:"due_date"`
-	ClaimedBy   string    `json:"claimed_by,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	UpdatedBy   string    `json:"updated_by"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Description  string   `json:"description"`
+	Assignee     string   `json:"assignee"`
+	Status       string   `json:"status"`
+	Priority     string   `json:"priority"`
+	DueDate      string   `json:"due_date"`
+	ClaimedBy    string   `json:"claimed_by,omitempty"`
+	Dependencies []string `json:"dependencies,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	UpdatedBy    string   `json:"updated_by"`
 }
 
 type member struct {
@@ -801,6 +802,415 @@ Agents are registered at startup and unregistered when they disconnect.`),
 		},
 	)
 
+	// ── add_task_comment ──────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("add_task_comment",
+			mcp.WithDescription(`Add a comment to a task. Comments appear on the task and are visible to all team members.
+Use this to leave analysis notes, blockers, decisions, or progress updates on a specific task.
+Comments are persistent and attached to the task, unlike chat messages.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char task ID prefix")),
+			mcp.WithString("content", mcp.Required(), mcp.Description("Comment text")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			content, _ := req.Params.Arguments["content"].(string)
+			if taskID == "" || content == "" {
+				return nil, fmt.Errorf("task_id and content are required")
+			}
+			payload := map[string]interface{}{
+				"author":   w.agentID(),
+				"content":  content,
+				"is_agent": true,
+			}
+			body, err := w.post("/api/tasks/"+taskID+"/comments", payload)
+			if err != nil {
+				return nil, fmt.Errorf("adding comment: %w", err)
+			}
+			var comment struct {
+				ID        string `json:"id"`
+				Author    string `json:"author"`
+				Content   string `json:"content"`
+				Timestamp string `json:"timestamp"`
+			}
+			if err := json.Unmarshal(body, &comment); err != nil {
+				return mcp.NewToolResultText("Comment added."), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Comment added to task `%s` by %s.", taskID, comment.Author)), nil
+		},
+	)
+
+	// ── get_task_comments ─────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("get_task_comments",
+			mcp.WithDescription(`Get all comments on a task, ordered chronologically.
+Use this to read analysis notes, blockers, and discussion threads attached to a specific task.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char task ID prefix")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			if taskID == "" {
+				return nil, fmt.Errorf("task_id is required")
+			}
+			body, err := w.get("/api/tasks/" + taskID + "/comments")
+			if err != nil {
+				return nil, fmt.Errorf("fetching comments: %w", err)
+			}
+			var comments []struct {
+				ID        string    `json:"id"`
+				Author    string    `json:"author"`
+				Content   string    `json:"content"`
+				Timestamp time.Time `json:"timestamp"`
+				IsAgent   bool      `json:"is_agent"`
+			}
+			if err := json.Unmarshal(body, &comments); err != nil {
+				return nil, fmt.Errorf("parsing comments: %w", err)
+			}
+			if len(comments) == 0 {
+				return mcp.NewToolResultText(fmt.Sprintf("No comments on task `%s`.", taskID)), nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%d comment(s) on task `%s`:\n\n", len(comments), taskID))
+			for _, c := range comments {
+				agent := ""
+				if c.IsAgent {
+					agent = " [agent]"
+				}
+				sb.WriteString(fmt.Sprintf("**%s**%s — %s\n%s\n\n",
+					c.Author, agent, c.Timestamp.Format("15:04 Jan 2"), c.Content))
+			}
+			return mcp.NewToolResultText(sb.String()), nil
+		},
+	)
+
+	// ── add_dependency ────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("add_dependency",
+			mcp.WithDescription(`Mark a task as depending on another task.
+This means the first task should not be started until the dependency is done.
+Dependencies are visible in the task list and help the team understand blockers.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char ID of the task that has a dependency")),
+			mcp.WithString("depends_on", mcp.Required(), mcp.Description("Short 8-char ID of the task it depends on")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			dependsOn, _ := req.Params.Arguments["depends_on"].(string)
+			if taskID == "" || dependsOn == "" {
+				return nil, fmt.Errorf("task_id and depends_on are required")
+			}
+			payload := map[string]string{"depends_on": dependsOn}
+			body, err := w.post("/api/tasks/"+taskID+"/dependencies", payload)
+			if err != nil {
+				return nil, fmt.Errorf("adding dependency: %w", err)
+			}
+			var t task
+			if err := json.Unmarshal(body, &t); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Dependency added: `%s` depends on `%s`.", taskID, dependsOn)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Task `%s` (%s) now depends on `%s`. Total deps: %d.",
+				t.shortID(), t.Title, dependsOn, len(t.Dependencies))), nil
+		},
+	)
+
+	// ── remove_dependency ─────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("remove_dependency",
+			mcp.WithDescription(`Remove a dependency relationship between two tasks.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char ID of the task")),
+			mcp.WithString("depends_on", mcp.Required(), mcp.Description("Short 8-char ID of the dependency to remove")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			dependsOn, _ := req.Params.Arguments["depends_on"].(string)
+			if taskID == "" || dependsOn == "" {
+				return nil, fmt.Errorf("task_id and depends_on are required")
+			}
+			payload := map[string]string{"depends_on": dependsOn}
+			body, err := w.deleteWithBody("/api/tasks/"+taskID+"/dependencies", payload)
+			if err != nil {
+				return nil, fmt.Errorf("removing dependency: %w", err)
+			}
+			var t task
+			if err := json.Unmarshal(body, &t); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Dependency removed from `%s`.", taskID)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Dependency removed. Task `%s` now has %d dep(s).", t.shortID(), len(t.Dependencies))), nil
+		},
+	)
+
+	// ── set_context ───────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("set_context",
+			mcp.WithDescription(`Write a key-value entry to the shared agent scratchpad.
+The scratchpad is a persistent key-value store visible to all agents.
+Use it to share state between agents without polluting team chat.
+Example keys: "current_sprint_goal", "deploy_target", "review_queue".`),
+			mcp.WithString("key", mcp.Required(), mcp.Description("The key to set")),
+			mcp.WithString("value", mcp.Required(), mcp.Description("The value to store")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			key, _ := req.Params.Arguments["key"].(string)
+			value, _ := req.Params.Arguments["value"].(string)
+			if key == "" {
+				return nil, fmt.Errorf("key is required")
+			}
+			payload := map[string]string{"key": key, "value": value}
+			_, err := w.post("/api/context", payload)
+			if err != nil {
+				return nil, fmt.Errorf("setting context: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Context set: `%s` = %q", key, value)), nil
+		},
+	)
+
+	// ── get_context ───────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("get_context",
+			mcp.WithDescription(`Read from the shared agent scratchpad.
+Pass a specific key to get one value, or omit key to list all entries.
+The scratchpad is shared across all agents and persists between sessions.`),
+			mcp.WithString("key", mcp.Description("Specific key to retrieve (omit to list all)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			key, _ := req.Params.Arguments["key"].(string)
+			if key != "" {
+				body, err := w.get("/api/context?key=" + key)
+				if err != nil {
+					return nil, fmt.Errorf("getting context: %w", err)
+				}
+				var entry struct {
+					Key   string `json:"key"`
+					Value string `json:"value"`
+				}
+				if err := json.Unmarshal(body, &entry); err != nil {
+					return mcp.NewToolResultText(string(body)), nil
+				}
+				return mcp.NewToolResultText(fmt.Sprintf("`%s` = %q", entry.Key, entry.Value)), nil
+			}
+			body, err := w.get("/api/context")
+			if err != nil {
+				return nil, fmt.Errorf("getting context: %w", err)
+			}
+			var all map[string]string
+			if err := json.Unmarshal(body, &all); err != nil {
+				return nil, fmt.Errorf("parsing context: %w", err)
+			}
+			if len(all) == 0 {
+				return mcp.NewToolResultText("Scratchpad is empty."), nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%d scratchpad entry(ies):\n\n", len(all)))
+			for k, v := range all {
+				sb.WriteString(fmt.Sprintf("- `%s` = %q\n", k, v))
+			}
+			return mcp.NewToolResultText(sb.String()), nil
+		},
+	)
+
+	// ── hand_off_task ─────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("hand_off_task",
+			mcp.WithDescription(`Hand off a task to another agent, passing context about what was done and what remains.
+The receiving agent gets a direct message with the handoff details.
+A handoff event is broadcast to the whole team.
+Use this instead of send_direct_message when ownership of a task is transferring.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char task ID to hand off")),
+			mcp.WithString("to", mcp.Required(), mcp.Description("Agent or member name to hand off to")),
+			mcp.WithString("context", mcp.Description("What was done, what remains, and any relevant state")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			to, _ := req.Params.Arguments["to"].(string)
+			context, _ := req.Params.Arguments["context"].(string)
+			if taskID == "" || to == "" {
+				return nil, fmt.Errorf("task_id and to are required")
+			}
+			payload := map[string]string{
+				"from":    w.agentID(),
+				"to":      to,
+				"context": context,
+			}
+			_, err := w.post("/api/tasks/"+taskID+"/handoff", payload)
+			if err != nil {
+				return nil, fmt.Errorf("handing off task: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Task `%s` handed off to %s.", taskID, to)), nil
+		},
+	)
+
+	// ── react_to_result ───────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("react_to_result",
+			mcp.WithDescription(`React to an agent result message with approve, ack, or reject.
+Reactions create a simple review loop: one agent posts a result, another approves or requests changes.
+The message_id comes from the post_result response or from wait_for_change events.
+Each agent/member can have one reaction per message; reacting again updates it.`),
+			mcp.WithString("message_id", mcp.Required(), mcp.Description("Full message ID from the agent result")),
+			mcp.WithString("reaction", mcp.Required(), mcp.Description("approve | ack | reject")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			msgID, _ := req.Params.Arguments["message_id"].(string)
+			reaction, _ := req.Params.Arguments["reaction"].(string)
+			if msgID == "" || reaction == "" {
+				return nil, fmt.Errorf("message_id and reaction are required")
+			}
+			validReactions := map[string]bool{"approve": true, "ack": true, "reject": true}
+			if !validReactions[reaction] {
+				return nil, fmt.Errorf("invalid reaction %q — use: approve | ack | reject", reaction)
+			}
+			payload := map[string]string{
+				"reactor":  w.agentID(),
+				"reaction": reaction,
+			}
+			_, err := w.post("/api/results/"+msgID+"/react", payload)
+			if err != nil {
+				return nil, fmt.Errorf("reacting: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Reacted %q to message %s.", reaction, msgID[:8])), nil
+		},
+	)
+
+	// ── register_pipeline ─────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("register_pipeline",
+			mcp.WithDescription(`Register a named agent pipeline — an ordered list of agents that process a task in sequence.
+When triggered, the first agent in the pipeline receives a direct message with the task and context.
+Pipelines are in-memory and must be re-registered on restart.
+Example: "review-deploy" with steps ["reviewer", "deployer"].`),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Pipeline name (e.g. review-deploy)")),
+			mcp.WithString("steps", mcp.Required(), mcp.Description("Comma-separated agent names in order (e.g. reviewer,deployer)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.Params.Arguments["name"].(string)
+			stepsStr, _ := req.Params.Arguments["steps"].(string)
+			if name == "" || stepsStr == "" {
+				return nil, fmt.Errorf("name and steps are required")
+			}
+			var steps []string
+			for _, s := range strings.Split(stepsStr, ",") {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					steps = append(steps, s)
+				}
+			}
+			payload := map[string]interface{}{"name": name, "steps": steps}
+			body, err := w.post("/api/pipelines", payload)
+			if err != nil {
+				return nil, fmt.Errorf("registering pipeline: %w", err)
+			}
+			var info struct {
+				Name  string   `json:"name"`
+				Steps []string `json:"steps"`
+			}
+			if err := json.Unmarshal(body, &info); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Pipeline %q registered.", name)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Pipeline %q registered with %d step(s): %s",
+				info.Name, len(info.Steps), strings.Join(info.Steps, " → "))), nil
+		},
+	)
+
+	// ── trigger_pipeline ──────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("trigger_pipeline",
+			mcp.WithDescription(`Trigger a registered pipeline for a task.
+Sends a direct message to the first agent in the pipeline with the task ID and context.
+Broadcasts a pipeline_event so all agents can observe the pipeline start.
+The first agent should complete their step and then either trigger the next step manually
+or use send_direct_message to hand off to the next agent in the pipeline.`),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Pipeline name to trigger")),
+			mcp.WithString("task_id", mcp.Description("Task ID associated with this pipeline run")),
+			mcp.WithString("context", mcp.Description("Context to pass to the first agent")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.Params.Arguments["name"].(string)
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			context, _ := req.Params.Arguments["context"].(string)
+			if name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+			payload := map[string]string{
+				"task_id":      taskID,
+				"context":      context,
+				"triggered_by": w.agentID(),
+			}
+			body, err := w.post("/api/pipelines/"+name+"/trigger", payload)
+			if err != nil {
+				return nil, fmt.Errorf("triggering pipeline: %w", err)
+			}
+			var result struct {
+				Pipeline   string `json:"pipeline"`
+				Steps      int    `json:"steps"`
+				FirstAgent string `json:"first_agent"`
+			}
+			if err := json.Unmarshal(body, &result); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Pipeline %q triggered.", name)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Pipeline %q triggered (%d steps). First agent: %s.",
+				result.Pipeline, result.Steps, result.FirstAgent)), nil
+		},
+	)
+
+	// ── list_pipelines ────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("list_pipelines",
+			mcp.WithDescription(`List all registered pipelines and their steps.
+Use this to see what automated workflows are available before triggering one.`),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			body, err := w.get("/api/pipelines")
+			if err != nil {
+				return nil, fmt.Errorf("fetching pipelines: %w", err)
+			}
+			var pipelines []struct {
+				Name  string   `json:"name"`
+				Steps []string `json:"steps"`
+			}
+			if err := json.Unmarshal(body, &pipelines); err != nil {
+				return nil, fmt.Errorf("parsing pipelines: %w", err)
+			}
+			if len(pipelines) == 0 {
+				return mcp.NewToolResultText("No pipelines registered. Use register_pipeline to create one."), nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%d pipeline(s):\n\n", len(pipelines)))
+			for _, p := range pipelines {
+				sb.WriteString(fmt.Sprintf("- **%s** → %s\n", p.Name, strings.Join(p.Steps, " → ")))
+			}
+			return mcp.NewToolResultText(sb.String()), nil
+		},
+	)
+
+	// ── reply_message ─────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("reply_message",
+			mcp.WithDescription(`Send a chat message as a reply to an existing message.
+The reply appears in chat with a reference to the original message and sender.
+Use this to create threaded discussions rather than sending standalone messages.`),
+			mcp.WithString("reply_to_id", mcp.Required(), mcp.Description("Full message ID to reply to (from wait_for_change or get_task_comments)")),
+			mcp.WithString("reply_from", mcp.Required(), mcp.Description("Display name of the original sender (for context)")),
+			mcp.WithString("content", mcp.Required(), mcp.Description("Reply message text")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			replyTo, _ := req.Params.Arguments["reply_to_id"].(string)
+			replyFrom, _ := req.Params.Arguments["reply_from"].(string)
+			content, _ := req.Params.Arguments["content"].(string)
+			if replyTo == "" || content == "" {
+				return nil, fmt.Errorf("reply_to_id and content are required")
+			}
+			payload := map[string]string{
+				"from":       w.agentID(),
+				"content":    content,
+				"reply_to":   replyTo,
+				"reply_from": replyFrom,
+			}
+			_, err := w.post("/api/messages", payload)
+			if err != nil {
+				return nil, fmt.Errorf("sending reply: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Reply sent to message %s.", replyTo[:8])), nil
+		},
+	)
+
 	return server.ServeStdio(s)
 }
 
@@ -883,4 +1293,26 @@ func (w *WertMCP) delete(path string) error {
 		return fmt.Errorf("server %d: %s", resp.StatusCode, body)
 	}
 	return nil
+}
+
+func (w *WertMCP) deleteWithBody(path string, payload any) ([]byte, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodDelete, w.serverURL+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := w.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("DELETE %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("server %d: %s", resp.StatusCode, body)
+	}
+	return body, nil
 }

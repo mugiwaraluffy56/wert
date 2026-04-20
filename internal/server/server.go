@@ -49,6 +49,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/agents", s.handleAPIAgents)
 	s.mux.HandleFunc("/api/direct", s.handleAPIDirect)
 	s.mux.HandleFunc("/api/results", s.handleAPIResults)
+	s.mux.HandleFunc("/api/results/", s.handleAPIResultByID)
+	s.mux.HandleFunc("/api/context", s.handleAPIContext)
+	s.mux.HandleFunc("/api/pipelines", s.handleAPIPipelines)
+	s.mux.HandleFunc("/api/pipelines/", s.handleAPIPipelineByName)
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
@@ -67,7 +71,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	c.readPump()
 }
 
-// ---- REST API (for MCP server) ----
+// ---- REST API ----
 
 func (s *Server) handleAPIMembers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -120,7 +124,6 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 			createdBy = "mcp"
 		}
 		task := s.hub.store.CreateTask(body.Title, body.Description, body.Assignee, body.Priority, body.DueDate, createdBy)
-		// Broadcast to all connected clients.
 		data, _ := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *task})
 		s.hub.Broadcast(data)
 		w.WriteHeader(http.StatusCreated)
@@ -132,23 +135,31 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPITaskByID(w http.ResponseWriter, r *http.Request) {
-	// path: /api/tasks/<id-prefix>[/claim|/unclaim]
+	// path: /api/tasks/<id-prefix>[/action]
 	rest := r.URL.Path[len("/api/tasks/"):]
 	if rest == "" {
 		http.Error(w, "missing task id", http.StatusBadRequest)
 		return
 	}
 
-	// Handle /api/tasks/{id}/claim and /api/tasks/{id}/unclaim
-	if strings.HasSuffix(rest, "/claim") || strings.HasSuffix(rest, "/unclaim") {
-		parts := strings.SplitN(rest, "/", 2)
-		prefix := parts[0]
-		action := parts[1]
-		s.handleTaskClaimAction(w, r, prefix, action)
+	parts := strings.SplitN(rest, "/", 2)
+	prefix := parts[0]
+
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "claim", "unclaim":
+			s.handleTaskClaimAction(w, r, prefix, parts[1])
+		case "comments":
+			s.handleAPITaskComments(w, r, prefix)
+		case "dependencies":
+			s.handleAPITaskDependencies(w, r, prefix)
+		case "handoff":
+			s.handleAPITaskHandoff(w, r, prefix)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
 		return
 	}
-
-	prefix := rest
 
 	switch r.Method {
 	case http.MethodPut:
@@ -239,14 +250,183 @@ func (s *Server) handleTaskClaimAction(w http.ResponseWriter, r *http.Request, p
 	}
 }
 
-func (s *Server) handleAPIMessages(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAPITaskComments(w http.ResponseWriter, r *http.Request, prefix string) {
+	switch r.Method {
+	case http.MethodGet:
+		task := s.hub.store.GetTaskByPrefix(prefix)
+		if task == nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		comments := task.Comments
+		if comments == nil {
+			comments = []protocol.TaskComment{}
+		}
+		writeJSON(w, comments)
+
+	case http.MethodPost:
+		var body struct {
+			Author  string `json:"author"`
+			Content string `json:"content"`
+			IsAgent bool   `json:"is_agent"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
+			http.Error(w, "content required", http.StatusBadRequest)
+			return
+		}
+		if body.Author == "" {
+			body.Author = "agent"
+		}
+		task := s.hub.store.GetTaskByPrefix(prefix)
+		if task == nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		comment, ok := s.hub.store.AddTaskComment(task.ID, body.Author, body.Content, body.IsAgent)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		// Broadcast updated task (upsert) so clients see new comment count.
+		updatedTask := s.hub.store.GetTaskByPrefix(task.ID)
+		if updatedTask != nil {
+			if taskData, err := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *updatedTask}); err == nil {
+				s.hub.Broadcast(taskData)
+			}
+		}
+		// Broadcast comment event.
+		if data, err := protocol.NewEnvelope(protocol.MsgTaskComment, protocol.TaskCommentPayload{Comment: *comment}); err == nil {
+			s.hub.Broadcast(data)
+		}
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, comment)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAPITaskDependencies(w http.ResponseWriter, r *http.Request, prefix string) {
+	switch r.Method {
+	case http.MethodGet:
+		task := s.hub.store.GetTaskByPrefix(prefix)
+		if task == nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		deps := task.Dependencies
+		if deps == nil {
+			deps = []string{}
+		}
+		writeJSON(w, deps)
+
+	case http.MethodPost:
+		var body struct {
+			DependsOn string `json:"depends_on"` // task ID prefix of the dependency
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DependsOn == "" {
+			http.Error(w, "depends_on required", http.StatusBadRequest)
+			return
+		}
+		task, ok := s.hub.store.AddTaskDependency(prefix, body.DependsOn)
+		if !ok {
+			http.Error(w, "task not found", http.StatusNotFound)
+			return
+		}
+		// Broadcast full task update.
+		if data, err := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *task}); err == nil {
+			s.hub.Broadcast(data)
+		}
+		writeJSON(w, task)
+
+	case http.MethodDelete:
+		var body struct {
+			DependsOn string `json:"depends_on"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DependsOn == "" {
+			http.Error(w, "depends_on required", http.StatusBadRequest)
+			return
+		}
+		task, ok := s.hub.store.RemoveTaskDependency(prefix, body.DependsOn)
+		if !ok {
+			http.Error(w, "task not found", http.StatusNotFound)
+			return
+		}
+		if data, err := protocol.NewEnvelope(protocol.MsgTaskCreate, protocol.TaskCreatePayload{Task: *task}); err == nil {
+			s.hub.Broadcast(data)
+		}
+		writeJSON(w, task)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAPITaskHandoff(w http.ResponseWriter, r *http.Request, prefix string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
 		From    string `json:"from"`
-		Content string `json:"content"`
+		To      string `json:"to"`
+		Context string `json:"context"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.To == "" {
+		http.Error(w, "to field required", http.StatusBadRequest)
+		return
+	}
+	if body.From == "" {
+		body.From = "agent"
+	}
+	task := s.hub.store.GetTaskByPrefix(prefix)
+	if task == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	p := protocol.AgentHandoffPayload{
+		TaskID:    task.ID,
+		From:      body.From,
+		To:        body.To,
+		Context:   body.Context,
+		Timestamp: time.Now(),
+	}
+	// Store as agent message so it shows in chat history.
+	content := fmt.Sprintf("handed off task %s to %s", task.ID[:8], body.To)
+	if body.Context != "" {
+		content += ": " + body.Context
+	}
+	msg := s.hub.store.AddAgentMessage(body.From, content, "handoff", body.To)
+	// Deliver DM to recipient.
+	dmPayload := protocol.DirectMsgPayload{
+		ID:        msg.ID,
+		From:      body.From,
+		To:        body.To,
+		Content:   fmt.Sprintf("[Handoff] Task %s — %s", task.ID[:8], body.Context),
+		Timestamp: msg.Timestamp,
+		IsAgent:   true,
+	}
+	if dmData, err := protocol.NewEnvelope(protocol.MsgDirectMsg, dmPayload); err == nil {
+		s.hub.sendDirect(body.To, dmData)
+	}
+	// Broadcast handoff event.
+	if data, err := protocol.NewEnvelope(protocol.MsgAgentHandoff, p); err == nil {
+		s.hub.Broadcast(data)
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, p)
+}
+
+func (s *Server) handleAPIMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		From      string `json:"from"`
+		Content   string `json:"content"`
+		ReplyTo   string `json:"reply_to"`
+		ReplyFrom string `json:"reply_from"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -255,7 +435,7 @@ func (s *Server) handleAPIMessages(w http.ResponseWriter, r *http.Request) {
 	if body.From == "" {
 		body.From = "mcp"
 	}
-	msg := s.hub.store.AddMessage(body.From, body.Content)
+	msg := s.hub.store.AddMessage(body.From, body.Content, body.ReplyTo, body.ReplyFrom)
 	data, _ := protocol.NewEnvelope(protocol.MsgChat, protocol.ChatPayload{Message: *msg})
 	s.hub.Broadcast(data)
 	w.WriteHeader(http.StatusCreated)
@@ -263,7 +443,6 @@ func (s *Server) handleAPIMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAPIWatch streams Server-Sent Events for every broadcast event.
-// Query param: ?filter=type1,type2 to receive only matching message types.
 func (s *Server) handleAPIWatch(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -289,7 +468,6 @@ func (s *Server) handleAPIWatch(w http.ResponseWriter, r *http.Request) {
 	s.hub.AddSSEWatcher(ch)
 	defer s.hub.RemoveSSEWatcher(ch)
 
-	// Send initial keepalive comment.
 	fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
@@ -302,12 +480,10 @@ func (s *Server) handleAPIWatch(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// heartbeat to keep connection alive
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		case data := <-ch:
 			if filterSet != nil {
-				// Peek at type field to decide whether to forward.
 				var env protocol.Envelope
 				if err := json.Unmarshal(data, &env); err != nil || !filterSet[string(env.Type)] {
 					continue
@@ -336,7 +512,6 @@ func (s *Server) handleAPIAgents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		info := s.hub.store.RegisterAgent(body.Name, body.Capabilities)
-		// Broadcast agent-online event.
 		data, _ := protocol.NewEnvelope(protocol.MsgAgentOnline, protocol.AgentOnlinePayload{
 			Agent:  *info,
 			Online: true,
@@ -366,7 +541,7 @@ func (s *Server) handleAPIAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAPIDirect delivers a private message from one agent to a specific recipient.
+// handleAPIDirect delivers a private message to a specific recipient.
 func (s *Server) handleAPIDirect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -394,7 +569,6 @@ func (s *Server) handleAPIDirect(w http.ResponseWriter, r *http.Request) {
 		IsAgent:   true,
 	}
 	data, _ := protocol.NewEnvelope(protocol.MsgDirectMsg, p)
-	// Deliver only to the recipient; sender gets the REST response.
 	s.hub.sendDirect(body.To, data)
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, msg)
@@ -429,12 +603,205 @@ func (s *Server) handleAPIResults(w http.ResponseWriter, r *http.Request) {
 		Title:     body.Title,
 		Content:   body.Content,
 		Timestamp: msg.Timestamp,
+		MessageID: msg.ID,
 	}
 	data, _ := protocol.NewEnvelope(protocol.MsgAgentResult, p)
 	s.hub.Broadcast(data)
 	w.WriteHeader(http.StatusCreated)
-	// Return envelope ID for tracking.
 	writeJSON(w, map[string]string{"id": uuid.New().String(), "message_id": msg.ID})
+}
+
+// handleAPIResultByID handles /api/results/:id/react
+func (s *Server) handleAPIResultByID(w http.ResponseWriter, r *http.Request) {
+	rest := r.URL.Path[len("/api/results/"):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[1] != "react" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	msgID := parts[0]
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Reactor  string `json:"reactor"`
+		Reaction string `json:"reaction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Reaction == "" || body.Reactor == "" {
+		http.Error(w, "reactor and reaction required", http.StatusBadRequest)
+		return
+	}
+	validReactions := map[string]bool{"approve": true, "ack": true, "reject": true}
+	if !validReactions[body.Reaction] {
+		http.Error(w, "invalid reaction: use approve, ack, or reject", http.StatusBadRequest)
+		return
+	}
+	if !s.hub.store.AddReaction(msgID, body.Reactor, body.Reaction) {
+		http.Error(w, "message not found", http.StatusNotFound)
+		return
+	}
+	p := protocol.ResultReactionPayload{
+		MessageID: msgID,
+		Reactor:   body.Reactor,
+		Reaction:  body.Reaction,
+		At:        time.Now(),
+	}
+	data, _ := protocol.NewEnvelope(protocol.MsgResultReaction, p)
+	s.hub.Broadcast(data)
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, p)
+}
+
+// handleAPIContext manages the shared agent scratchpad.
+func (s *Server) handleAPIContext(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		key := r.URL.Query().Get("key")
+		if key != "" {
+			val, ok := s.hub.store.GetScratchpad(key)
+			if !ok {
+				http.Error(w, "key not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, map[string]string{"key": key, "value": val})
+		} else {
+			writeJSON(w, s.hub.store.GetAllScratchpad())
+		}
+	case http.MethodPost:
+		var body struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+			http.Error(w, "key required", http.StatusBadRequest)
+			return
+		}
+		s.hub.store.SetScratchpad(body.Key, body.Value)
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, map[string]string{"key": body.Key, "value": body.Value})
+	case http.MethodDelete:
+		var body struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+			http.Error(w, "key required", http.StatusBadRequest)
+			return
+		}
+		s.hub.store.DeleteScratchpad(body.Key)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAPIPipelines manages pipeline registration.
+func (s *Server) handleAPIPipelines(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.hub.store.ListPipelines())
+	case http.MethodPost:
+		var body struct {
+			Name  string   `json:"name"`
+			Steps []string `json:"steps"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" || len(body.Steps) == 0 {
+			http.Error(w, "name and steps required", http.StatusBadRequest)
+			return
+		}
+		info := s.hub.store.RegisterPipeline(body.Name, body.Steps)
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, info)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAPIPipelineByName handles DELETE and /trigger for a named pipeline.
+func (s *Server) handleAPIPipelineByName(w http.ResponseWriter, r *http.Request) {
+	rest := r.URL.Path[len("/api/pipelines/"):]
+	parts := strings.SplitN(rest, "/", 2)
+	name := parts[0]
+	if name == "" {
+		http.Error(w, "missing pipeline name", http.StatusBadRequest)
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "trigger" {
+		s.handleAPIPipelineTrigger(w, r, name)
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		s.hub.store.DeletePipeline(name)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Error(w, "not found", http.StatusNotFound)
+}
+
+func (s *Server) handleAPIPipelineTrigger(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pl, ok := s.hub.store.GetPipeline(name)
+	if !ok {
+		http.Error(w, "pipeline not found", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		TaskID      string `json:"task_id"`
+		Context     string `json:"context"`
+		TriggeredBy string `json:"triggered_by"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if body.TriggeredBy == "" {
+		body.TriggeredBy = "agent"
+	}
+
+	// Send DM to first agent in the pipeline.
+	if len(pl.Steps) > 0 {
+		firstAgent := pl.Steps[0]
+		content := fmt.Sprintf("[Pipeline: %s] Step 1/%d — task: %s. Context: %s",
+			name, len(pl.Steps), body.TaskID, body.Context)
+		msg := s.hub.store.AddAgentMessage(body.TriggeredBy, content, "dm", firstAgent)
+		dmPayload := protocol.DirectMsgPayload{
+			ID:        msg.ID,
+			From:      body.TriggeredBy,
+			To:        firstAgent,
+			Content:   content,
+			Timestamp: msg.Timestamp,
+			IsAgent:   true,
+		}
+		if dmData, err := protocol.NewEnvelope(protocol.MsgDirectMsg, dmPayload); err == nil {
+			s.hub.sendDirect(firstAgent, dmData)
+		}
+	}
+
+	// Broadcast pipeline triggered event.
+	evtPayload := protocol.PipelineEventPayload{
+		Name:   name,
+		Agent:  pl.Steps[0],
+		TaskID: body.TaskID,
+		Event:  "triggered",
+		Step:   1,
+		Total:  len(pl.Steps),
+	}
+	if data, err := protocol.NewEnvelope(protocol.MsgPipelineEvent, evtPayload); err == nil {
+		s.hub.Broadcast(data)
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]interface{}{
+		"pipeline":    name,
+		"task_id":     body.TaskID,
+		"steps":       len(pl.Steps),
+		"first_agent": pl.Steps[0],
+	})
 }
 
 // ---- helpers ----

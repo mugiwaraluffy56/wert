@@ -873,7 +873,32 @@ func (m Model) renderChat() string {
 			}
 			header := agentNameSt.Render("["+msg.From+"]") + "  " + mutedSt.Render(title) + "  " + ts
 			body := resultBoxSt.Render(msg.Content)
-			sb.WriteString("  " + header + "\n  " + body + "\n\n")
+			sb.WriteString("  " + header + "\n  " + body + "\n")
+			// Render reactions if any.
+			if len(msg.Reactions) > 0 {
+				reactionLine := "  " + mutedSt.Render("  reactions: ")
+				for _, r := range msg.Reactions {
+					var rst lipgloss.Style
+					switch r.Reaction {
+					case "approve":
+						rst = lipgloss.NewStyle().Foreground(cGreen).Bold(true)
+					case "reject":
+						rst = lipgloss.NewStyle().Foreground(cRed).Bold(true)
+					default:
+						rst = lipgloss.NewStyle().Foreground(cMuted)
+					}
+					reactionLine += rst.Render(r.Reactor+":"+r.Reaction) + mutedSt.Render("  ")
+				}
+				sb.WriteString(reactionLine + "\n")
+			}
+			sb.WriteString("\n")
+			continue
+		}
+
+		// Handoff event — render as dim system line.
+		if msg.IsAgent && msg.Kind == "handoff" {
+			label := agentDmSt.Render("[" + msg.From + " → " + msg.Meta + "]")
+			sb.WriteString(fmt.Sprintf("  %s  %s  %s\n", ts, label, mutedSt.Render(msg.Content)))
 			continue
 		}
 
@@ -910,6 +935,11 @@ func (m Model) renderChat() string {
 			} else {
 				nameSt = memberNameSt
 			}
+		}
+		// Thread reply reference.
+		if msg.ReplyTo != "" {
+			replyRef := "↩ " + msg.ReplyFrom
+			sb.WriteString(fmt.Sprintf("  %s\n", agentDmSt.Render("    "+replyRef)))
 		}
 		content := renderMentions(msg.Content, m.username)
 		line := fmt.Sprintf("  %s  %s  %s", ts, nameSt.Render(msg.From+":"), content)
@@ -1087,16 +1117,46 @@ func (m Model) renderTaskRow(t *protocol.Task, cw int) string {
 	}
 	var metaPlain []string
 	if t.DueDate != "" {
-		metaPlain = append(metaPlain, "due: "+t.DueDate)
+		today := time.Now().Format("2006-01-02")
+		dueStr := "due: " + t.DueDate
+		if t.Status != protocol.StatusDone {
+			if t.DueDate < today {
+				dueStr = "OVERDUE: " + t.DueDate
+			} else if t.DueDate == today {
+				dueStr = "DUE TODAY: " + t.DueDate
+			}
+		}
+		metaPlain = append(metaPlain, dueStr)
 	}
 	if t.UpdatedBy != "" && t.UpdatedBy != t.Assignee {
 		metaPlain = append(metaPlain, "by: "+t.UpdatedBy)
+	}
+	if len(t.Comments) > 0 {
+		metaPlain = append(metaPlain, fmt.Sprintf("%d comment(s)", len(t.Comments)))
+	}
+	if len(t.Dependencies) > 0 {
+		metaPlain = append(metaPlain, fmt.Sprintf("deps: %d", len(t.Dependencies)))
 	}
 	hasMeta := len(metaPlain) > 0 || t.ClaimedBy != ""
 	if hasMeta {
 		line := indent
 		if len(metaPlain) > 0 {
-			line += mutedSt.Render(strings.Join(metaPlain, "   "))
+			// Color due-date entries red/yellow when overdue/due-today.
+			rendered := make([]string, len(metaPlain))
+			today := time.Now().Format("2006-01-02")
+			for i, s := range metaPlain {
+				switch {
+				case strings.HasPrefix(s, "OVERDUE"):
+					rendered[i] = lipgloss.NewStyle().Foreground(cRed).Bold(true).Render(s)
+				case strings.HasPrefix(s, "DUE TODAY"):
+					rendered[i] = lipgloss.NewStyle().Foreground(cYellow).Bold(true).Render(s)
+				case strings.HasPrefix(s, "due:") && t.DueDate > today:
+					rendered[i] = mutedSt.Render(s)
+				default:
+					rendered[i] = mutedSt.Render(s)
+				}
+			}
+			line += strings.Join(rendered, mutedSt.Render("   "))
 		}
 		if t.ClaimedBy != "" {
 			if len(metaPlain) > 0 {
@@ -1605,6 +1665,30 @@ func (m Model) viewStatus() string {
 		conn = lipgloss.NewStyle().Foreground(cRed).Bold(true).Render("* OFFLINE  ")
 	}
 	left := conn + statusBarSt.Render(m.statusMsg)
+
+	// Due-date reminders: scan tasks relevant to this user.
+	today := time.Now().Format("2006-01-02")
+	var overdue, dueToday int
+	for _, t := range m.tasks {
+		if t.Status == protocol.StatusDone || t.DueDate == "" {
+			continue
+		}
+		if m.role != "admin" && t.Assignee != m.username {
+			continue
+		}
+		if t.DueDate < today {
+			overdue++
+		} else if t.DueDate == today {
+			dueToday++
+		}
+	}
+	if overdue > 0 {
+		left += "  " + lipgloss.NewStyle().Foreground(cRed).Bold(true).Render(fmt.Sprintf("! %d overdue", overdue))
+	}
+	if dueToday > 0 {
+		left += "  " + lipgloss.NewStyle().Foreground(cYellow).Bold(true).Render(fmt.Sprintf("~ %d due today", dueToday))
+	}
+
 	ver := mutedSt.Render(version.Version)
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(ver)
 	if gap < 1 {
@@ -1804,26 +1888,29 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 	case "/help":
 		lines := []string{
 			"",
-			"  navigation:  1-6 switch screens   tab next screen   [ ] filter sub-tabs   esc go back",
+			"  navigation:  1-6 switch screens   [ ] filter sub-tabs   esc go back",
 			"",
-			"  /done <id>           mark task done",
-			"  /wip <id>            mark in progress",
-			"  /blocked <id>        mark blocked",
-			"  /todo <id>           reset to todo",
-			"  /members             show team",
+			"  /done <id>              mark task done",
+			"  /wip <id>               mark in progress",
+			"  /blocked <id>           mark blocked",
+			"  /todo <id>              reset to todo",
+			"  /comment <id> <text>    add a comment to a task",
+			"  /reply @user <text>     reply to last message from a user",
+			"  /react <msg-id> approve|ack|reject   react to a result",
+			"  /members                show team",
 		}
 		if m.role == "admin" {
 			lines = append(lines,
 				`  /assign @user "title" ["desc"] [priority] [due:YYYY-MM-DD]   create task`,
-				"  /delete <id>         remove task",
-				"  /accept <username>   approve a pending join request",
-				"  /reject <username>   deny a pending join request",
+				"  /delete <id>            remove task",
+				"  /accept <username>      approve a pending join request",
+				"  /reject <username>      deny a pending join request",
 			)
 		}
 		lines = append(lines,
 			"  /github setup --token <token> --org <org>   configure github",
-			"  /github refresh      reload github data",
-			"  /exit                quit wert",
+			"  /github refresh         reload github data",
+			"  /exit                   quit wert",
 			"",
 		)
 		m.prevScreen = m.screen
@@ -1838,6 +1925,81 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 		m.updateStatus(fields, protocol.StatusBlocked)
 	case "/todo":
 		m.updateStatus(fields, protocol.StatusTodo)
+
+	case "/comment":
+		if len(fields) < 3 {
+			m.statusMsg = "usage: /comment <task-id> <text>"
+			return nil
+		}
+		task := m.findTaskByPrefix(fields[1])
+		if task == nil {
+			m.statusMsg = "task not found: " + fields[1]
+			return nil
+		}
+		text := strings.Join(fields[2:], " ")
+		p := protocol.TaskCommentPayload{
+			Comment: protocol.TaskComment{
+				TaskID:  task.ID,
+				Content: text,
+			},
+		}
+		if data, err := protocol.NewEnvelope(protocol.MsgTaskComment, p); err == nil {
+			m.cl.Send <- data
+		}
+		m.statusMsg = "comment sent"
+
+	case "/react":
+		if len(fields) < 3 {
+			m.statusMsg = "usage: /react <msg-id-prefix> approve|ack|reject"
+			return nil
+		}
+		msgID := m.findMessageIDByPrefix(fields[1])
+		if msgID == "" {
+			m.statusMsg = "message not found: " + fields[1]
+			return nil
+		}
+		reaction := fields[2]
+		p := protocol.ResultReactionPayload{
+			MessageID: msgID,
+			Reaction:  reaction,
+		}
+		if data, err := protocol.NewEnvelope(protocol.MsgResultReaction, p); err == nil {
+			m.cl.Send <- data
+		}
+		m.statusMsg = "reaction sent"
+
+	case "/reply":
+		// /reply @username <text>  — replies to the last message from that user
+		if len(fields) < 3 {
+			m.statusMsg = "usage: /reply @username <text>"
+			return nil
+		}
+		target := strings.TrimPrefix(fields[1], "@")
+		text := strings.Join(fields[2:], " ")
+		// Find last message from target user.
+		var replyToID, replyFrom string
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].From == target {
+				replyToID = m.messages[i].ID
+				replyFrom = m.messages[i].From
+				break
+			}
+		}
+		if replyToID == "" {
+			m.statusMsg = "no messages found from @" + target
+			return nil
+		}
+		p := protocol.ChatPayload{
+			Message: protocol.ChatMessage{
+				Content:   text,
+				ReplyTo:   replyToID,
+				ReplyFrom: replyFrom,
+			},
+		}
+		if data, err := protocol.NewEnvelope(protocol.MsgChat, p); err == nil {
+			m.cl.Send <- data
+		}
+		m.screen = scrChat
 
 	case "/members":
 		lines := []string{"", "  team members:"}
@@ -2021,9 +2183,20 @@ func (m Model) applyEnvelope(env protocol.Envelope) Model {
 			return m
 		}
 		cp := p.Task
-		m.tasks = append(m.tasks, &cp)
-		if cp.Assignee == m.username {
-			m.statusMsg = fmt.Sprintf("* new task: %s", cp.Title)
+		// Upsert: update existing task if found (e.g. after comment/dep changes), otherwise append.
+		found := false
+		for i, t := range m.tasks {
+			if t.ID == cp.ID {
+				m.tasks[i] = &cp
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.tasks = append(m.tasks, &cp)
+			if cp.Assignee == m.username {
+				m.statusMsg = fmt.Sprintf("* new task: %s", cp.Title)
+			}
 		}
 
 	case protocol.MsgTaskUpdate:
@@ -2197,6 +2370,79 @@ func (m Model) applyEnvelope(env protocol.Envelope) Model {
 			m.statusMsg = fmt.Sprintf("* DM from %s", p.From)
 		}
 
+	case protocol.MsgTaskComment:
+		var p protocol.TaskCommentPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		// The task is updated via MsgTaskCreate upsert; just show status notification.
+		m.statusMsg = fmt.Sprintf("* comment on task by %s", p.Comment.Author)
+
+	case protocol.MsgAgentHandoff:
+		var p protocol.AgentHandoffPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		m.statusMsg = fmt.Sprintf("* %s handed off task to %s", p.From, p.To)
+		// Inject as chat message so the handoff is visible in the chat log.
+		shortTask := p.TaskID
+		if len(shortTask) > 8 {
+			shortTask = shortTask[:8]
+		}
+		content := fmt.Sprintf("[handoff] task %s → %s", shortTask, p.To)
+		if p.Context != "" {
+			content += ": " + p.Context
+		}
+		msg := &protocol.ChatMessage{
+			ID:        p.TaskID + "-handoff-" + p.To,
+			From:      p.From,
+			Content:   content,
+			Timestamp: p.Timestamp,
+			IsAgent:   true,
+			Kind:      "handoff",
+			Meta:      p.To,
+		}
+		m.messages = append(m.messages, msg)
+		if m.screen != scrChat {
+			m.unreadChat++
+		}
+
+	case protocol.MsgResultReaction:
+		var p protocol.ResultReactionPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		// Find the message and update its reactions.
+		for _, msg := range m.messages {
+			if msg.ID == p.MessageID {
+				updated := false
+				for i, r := range msg.Reactions {
+					if r.Reactor == p.Reactor {
+						msg.Reactions[i].Reaction = p.Reaction
+						msg.Reactions[i].At = p.At
+						updated = true
+						break
+					}
+				}
+				if !updated {
+					msg.Reactions = append(msg.Reactions, protocol.ResultReaction{
+						Reactor:  p.Reactor,
+						Reaction: p.Reaction,
+						At:       p.At,
+					})
+				}
+				break
+			}
+		}
+		m.statusMsg = fmt.Sprintf("* %s reacted %s", p.Reactor, p.Reaction)
+
+	case protocol.MsgPipelineEvent:
+		var p protocol.PipelineEventPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		m.statusMsg = fmt.Sprintf("* pipeline %q %s (step %d/%d → %s)", p.Name, p.Event, p.Step, p.Total, p.Agent)
+
 	case protocol.MsgAgentOnline:
 		var p protocol.AgentOnlinePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -2259,6 +2505,24 @@ func fetchGitHub(cl *gh.Client) tea.Cmd {
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
 // ── Join approval helpers ─────────────────────────────────────────────────────
+
+func (m *Model) findTaskByPrefix(prefix string) *protocol.Task {
+	for _, t := range m.tasks {
+		if strings.HasPrefix(t.ID, prefix) {
+			return t
+		}
+	}
+	return nil
+}
+
+func (m *Model) findMessageIDByPrefix(prefix string) string {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if strings.HasPrefix(m.messages[i].ID, prefix) {
+			return m.messages[i].ID
+		}
+	}
+	return ""
+}
 
 func (m *Model) removePendingJoin(username string) {
 	out := m.pendingJoins[:0]

@@ -25,11 +25,17 @@ const (
 	MsgJoinPending MessageType = "join_pending"
 
 	// agent communication
-	MsgTaskClaim   MessageType = "task_claim"    // task claimed by an agent
-	MsgTaskUnclaim MessageType = "task_unclaim"  // task unclaimed
-	MsgAgentResult MessageType = "agent_result"  // structured AI output
-	MsgDirectMsg   MessageType = "direct_message" // private agent-to-agent or agent-to-human
-	MsgAgentOnline MessageType = "agent_online"  // agent registered / went offline
+	MsgTaskClaim   MessageType = "task_claim"
+	MsgTaskUnclaim MessageType = "task_unclaim"
+	MsgAgentResult MessageType = "agent_result"
+	MsgDirectMsg   MessageType = "direct_message"
+	MsgAgentOnline MessageType = "agent_online"
+
+	// teamwork & agent collab
+	MsgTaskComment    MessageType = "task_comment"    // comment added to a task
+	MsgAgentHandoff   MessageType = "agent_handoff"   // task handed off between agents
+	MsgResultReaction MessageType = "result_reaction" // reaction to an agent result
+	MsgPipelineEvent  MessageType = "pipeline_event"  // pipeline triggered or advanced
 )
 
 type TaskStatus string
@@ -41,18 +47,43 @@ const (
 	StatusBlocked    TaskStatus = "blocked"
 )
 
+// TaskComment is a note attached to a task.
+type TaskComment struct {
+	ID        string    `json:"id"`
+	TaskID    string    `json:"task_id"`
+	Author    string    `json:"author"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+	IsAgent   bool      `json:"is_agent,omitempty"`
+}
+
+// ResultReaction is a reaction (approve/ack/reject) on an agent result message.
+type ResultReaction struct {
+	Reactor  string    `json:"reactor"`
+	Reaction string    `json:"reaction"` // "approve" | "ack" | "reject"
+	At       time.Time `json:"at"`
+}
+
+// PipelineInfo describes a registered agent pipeline.
+type PipelineInfo struct {
+	Name  string   `json:"name"`
+	Steps []string `json:"steps"` // ordered list of agent names
+}
+
 type Task struct {
-	ID          string     `json:"id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Assignee    string     `json:"assignee"`
-	Status      TaskStatus `json:"status"`
-	Priority    string     `json:"priority"` // low | medium | high
-	DueDate     string     `json:"due_date,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	UpdatedBy   string     `json:"updated_by"`
-	ClaimedBy   string     `json:"claimed_by,omitempty"` // agent that claimed this task
+	ID           string        `json:"id"`
+	Title        string        `json:"title"`
+	Description  string        `json:"description"`
+	Assignee     string        `json:"assignee"`
+	Status       TaskStatus    `json:"status"`
+	Priority     string        `json:"priority"` // low | medium | high
+	DueDate      string        `json:"due_date,omitempty"`
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
+	UpdatedBy    string        `json:"updated_by"`
+	ClaimedBy    string        `json:"claimed_by,omitempty"`
+	Dependencies []string      `json:"dependencies,omitempty"` // full task IDs this task depends on
+	Comments     []TaskComment `json:"comments,omitempty"`
 }
 
 type Member struct {
@@ -63,13 +94,16 @@ type Member struct {
 }
 
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	From      string    `json:"from"`
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-	IsAgent   bool      `json:"is_agent,omitempty"`
-	Kind      string    `json:"kind,omitempty"` // "" | "dm" | "result"
-	Meta      string    `json:"meta,omitempty"` // dm: recipient name; result: title
+	ID        string           `json:"id"`
+	From      string           `json:"from"`
+	Content   string           `json:"content"`
+	Timestamp time.Time        `json:"timestamp"`
+	IsAgent   bool             `json:"is_agent,omitempty"`
+	Kind      string           `json:"kind,omitempty"`    // "" | "dm" | "result" | "handoff"
+	Meta      string           `json:"meta,omitempty"`    // dm: recipient; result: title; handoff: to-agent
+	ReplyTo   string           `json:"reply_to,omitempty"`   // message ID being replied to
+	ReplyFrom string           `json:"reply_from,omitempty"` // sender of the replied-to message
+	Reactions []ResultReaction `json:"reactions,omitempty"`
 }
 
 // AgentInfo describes a registered AI agent.
@@ -81,7 +115,6 @@ type AgentInfo struct {
 }
 
 // Envelope wraps every WebSocket message.
-// Payload is raw JSON so receivers can decode into the correct struct.
 type Envelope struct {
 	Type    MessageType     `json:"type"`
 	Payload json.RawMessage `json:"payload"`
@@ -158,6 +191,7 @@ type AgentResultPayload struct {
 	Title     string    `json:"title"`
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
+	MessageID string    `json:"message_id,omitempty"` // stored ChatMessage ID, for reactions
 }
 
 type DirectMsgPayload struct {
@@ -172,4 +206,32 @@ type DirectMsgPayload struct {
 type AgentOnlinePayload struct {
 	Agent  AgentInfo `json:"agent"`
 	Online bool      `json:"online"`
+}
+
+type TaskCommentPayload struct {
+	Comment TaskComment `json:"comment"`
+}
+
+type AgentHandoffPayload struct {
+	TaskID    string    `json:"task_id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Context   string    `json:"context"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+type ResultReactionPayload struct {
+	MessageID string    `json:"message_id"`
+	Reactor   string    `json:"reactor"`
+	Reaction  string    `json:"reaction"`
+	At        time.Time `json:"at"`
+}
+
+type PipelineEventPayload struct {
+	Name   string `json:"name"`
+	Agent  string `json:"agent"`
+	TaskID string `json:"task_id,omitempty"`
+	Event  string `json:"event"` // "triggered" | "done"
+	Step   int    `json:"step"`
+	Total  int    `json:"total"`
 }
