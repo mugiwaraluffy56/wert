@@ -295,6 +295,56 @@
   /* ── Warning callout ── */
   .callout.warn { border-left-color: #FDD835; }
   .callout.warn .callout-icon { color: #FDD835; }
+
+  /* ── Download grid ── */
+  .dl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin: 16px 0 28px;
+  }
+  .dl-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color 0.15s;
+  }
+  .dl-card:hover { border-color: var(--red); }
+  .dl-card .dl-os {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--fg);
+  }
+  .dl-card .dl-arch {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: -6px;
+  }
+  .dl-btn {
+    display: inline-block;
+    background: var(--red-dark);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 4px;
+    text-decoration: none;
+    text-align: center;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+  }
+  .dl-btn:hover { background: var(--red); }
+  .dl-btn.secondary {
+    background: var(--bg2);
+    border-color: var(--border);
+    color: var(--fg2);
+  }
+  .dl-btn.secondary:hover { border-color: var(--red); color: var(--fg); }
 </style>
 </head>
 <body>
@@ -380,55 +430,80 @@
 <!-- ── DOWNLOAD ── -->
 <section id="page-download">
   <h1>Download</h1>
-  <p class="subtitle">Prebuilt binaries for macOS, Linux, and Windows. No dependencies.</p>
+  <p class="subtitle">Prebuilt binaries for macOS, Linux, and Windows. No dependencies, no runtime.</p>
 
   <div class="callout green">
     <span class="callout-icon">✓</span>
-    <span>Binaries are statically compiled — no runtime required. Download, make executable, move to PATH.</span>
+    <span>Statically compiled — just download, make executable, and move to your PATH. Or use <code>wert update</code> once installed to always stay current.</span>
   </div>
 
   <h2>macOS</h2>
-  <pre><span class="c"># Apple Silicon (M1/M2/M3)</span>
-<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-darwin-arm64
-<span class="f">chmod</span> +x wert
-<span class="f">mv</span> wert /usr/local/bin/wert
-
-<span class="c"># Intel Mac</span>
-<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-darwin-amd64
-<span class="f">chmod</span> +x wert
-<span class="f">mv</span> wert /usr/local/bin/wert</pre>
+  <div class="dl-grid">
+    <div class="dl-card">
+      <div class="dl-os">macOS</div>
+      <div class="dl-arch">Apple Silicon — M1 / M2 / M3</div>
+      <a class="dl-btn" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-darwin-arm64" download>Download wert-darwin-arm64</a>
+    </div>
+    <div class="dl-card">
+      <div class="dl-os">macOS</div>
+      <div class="dl-arch">Intel — x86_64</div>
+      <a class="dl-btn" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-darwin-amd64" download>Download wert-darwin-amd64</a>
+    </div>
+  </div>
+  <pre><span class="c"># after downloading, make it executable and move to PATH</span>
+<span class="f">chmod</span> +x wert-darwin-arm64
+<span class="f">mv</span> wert-darwin-arm64 /usr/local/bin/wert</pre>
 
   <h2>Linux</h2>
-  <pre><span class="c"># amd64 (most servers and desktops)</span>
-<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-linux-amd64
-<span class="f">chmod</span> +x wert
-<span class="f">sudo mv</span> wert /usr/local/bin/wert
-
-<span class="c"># arm64 (Raspberry Pi, AWS Graviton, etc.)</span>
-<span class="f">curl</span> -Lo wert https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-linux-arm64
-<span class="f">chmod</span> +x wert
-<span class="f">sudo mv</span> wert /usr/local/bin/wert</pre>
+  <div class="dl-grid">
+    <div class="dl-card">
+      <div class="dl-os">Linux</div>
+      <div class="dl-arch">amd64 — most servers &amp; desktops</div>
+      <a class="dl-btn" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-linux-amd64" download>Download wert-linux-amd64</a>
+    </div>
+    <div class="dl-card">
+      <div class="dl-os">Linux</div>
+      <div class="dl-arch">arm64 — Raspberry Pi, Graviton</div>
+      <a class="dl-btn" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-linux-arm64" download>Download wert-linux-arm64</a>
+    </div>
+  </div>
+  <pre><span class="f">chmod</span> +x wert-linux-amd64
+<span class="f">sudo mv</span> wert-linux-amd64 /usr/local/bin/wert</pre>
 
   <h2>Windows</h2>
-  <pre><span class="c"># PowerShell — amd64</span>
-<span class="f">Invoke-WebRequest</span> -Uri https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-windows-amd64.exe `
-  -OutFile wert.exe
-
-<span class="c"># Move to a folder in your PATH, e.g.:</span>
-<span class="f">Move-Item</span> wert.exe C:\Windows\System32\wert.exe</pre>
+  <div class="dl-grid">
+    <div class="dl-card">
+      <div class="dl-os">Windows</div>
+      <div class="dl-arch">amd64 — most PCs</div>
+      <a class="dl-btn" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-windows-amd64.exe" download>Download wert-windows-amd64.exe</a>
+    </div>
+    <div class="dl-card">
+      <div class="dl-os">Windows</div>
+      <div class="dl-arch">arm64 — Surface Pro X, Snapdragon</div>
+      <a class="dl-btn" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/wert-windows-arm64.exe" download>Download wert-windows-arm64.exe</a>
+    </div>
+  </div>
+  <p>Rename the downloaded file to <code>wert.exe</code> and move it to a folder in your <code>PATH</code>, e.g. <code>C:\Windows\System32\</code> or any custom folder you have in <code>%PATH%</code>.</p>
 
   <h2>Verify checksum</h2>
-  <pre><span class="c"># Download the checksums file for the release and verify</span>
-<span class="f">curl</span> -Lo checksums.txt https://github.com/mugiwaraluffy56/wert/releases/latest/download/checksums.txt
-<span class="f">sha256sum</span> -c checksums.txt <span class="k">--ignore-missing</span></pre>
+  <div class="dl-grid" style="grid-template-columns: 1fr">
+    <div class="dl-card" style="flex-direction:row;align-items:center;justify-content:space-between">
+      <div>
+        <div class="dl-os">checksums.txt</div>
+        <div class="dl-arch">SHA-256 for all platform binaries</div>
+      </div>
+      <a class="dl-btn secondary" href="https://github.com/mugiwaraluffy56/wert/releases/latest/download/checksums.txt" download>Download</a>
+    </div>
+  </div>
+  <pre><span class="f">sha256sum</span> -c checksums.txt <span class="k">--ignore-missing</span></pre>
 
   <h2>All releases</h2>
-  <p>Browse all releases and changelogs at <a href="https://github.com/mugiwaraluffy56/wert/releases" style="color:var(--red-dim)">github.com/mugiwaraluffy56/wert/releases</a>.</p>
+  <p>Browse all versions and changelogs on <a href="https://github.com/mugiwaraluffy56/wert/releases" style="color:var(--red-dim)">GitHub Releases →</a></p>
 
   <h2>Self-update</h2>
-  <p>Once installed, wert can update itself:</p>
+  <p>Once installed, wert can update itself in one command:</p>
   <pre><span class="f">wert</span> update</pre>
-  <p>Or type <code>:update</code> in the cmdline while the TUI is open. It downloads the latest binary, replaces the current one in-place, and relaunches automatically.</p>
+  <p>Or type <code>:update</code> in the cmdline inside the TUI. It fetches the latest binary, replaces the current one, and relaunches automatically.</p>
 </section>
 
 <!-- ── INSTALL ── -->
