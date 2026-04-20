@@ -17,6 +17,7 @@ type Store struct {
 	messages []*protocol.ChatMessage
 	members  map[string]*protocol.Member
 	approved map[string]bool
+	agents   map[string]*protocol.AgentInfo // registered AI agents (not persisted)
 	dataFile string
 }
 
@@ -32,6 +33,7 @@ func NewStore(dataFile string) *Store {
 		messages: make([]*protocol.ChatMessage, 0),
 		members:  make(map[string]*protocol.Member),
 		approved: make(map[string]bool),
+		agents:   make(map[string]*protocol.AgentInfo),
 		dataFile: dataFile,
 	}
 	s.load()
@@ -168,6 +170,23 @@ func (s *Store) AddMessage(from, content string) *protocol.ChatMessage {
 	return msg
 }
 
+func (s *Store) AddAgentMessage(from, content, kind, meta string) *protocol.ChatMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg := &protocol.ChatMessage{
+		ID:        uuid.New().String(),
+		From:      from,
+		Content:   content,
+		Timestamp: time.Now(),
+		IsAgent:   true,
+		Kind:      kind,
+		Meta:      meta,
+	}
+	s.messages = append(s.messages, msg)
+	go s.persist()
+	return msg
+}
+
 func (s *Store) RecentMessages(n int) []*protocol.ChatMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -196,6 +215,76 @@ func (s *Store) SetOnline(username, role string, online bool) {
 			Online:   online,
 		}
 	}
+}
+
+func (s *Store) ClaimTask(prefix, agent string) (*protocol.Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, t := range s.tasks {
+		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
+			if t.ClaimedBy != "" && t.ClaimedBy != agent {
+				return nil, false // already claimed by someone else
+			}
+			t.ClaimedBy = agent
+			t.UpdatedAt = time.Now()
+			go s.persist()
+			cp := *t
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
+func (s *Store) UnclaimTask(prefix, agent string) (*protocol.Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, t := range s.tasks {
+		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
+			if t.ClaimedBy != "" && t.ClaimedBy != agent {
+				return nil, false // can only unclaim your own
+			}
+			t.ClaimedBy = ""
+			t.UpdatedAt = time.Now()
+			go s.persist()
+			cp := *t
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
+func (s *Store) RegisterAgent(name string, caps []string) *protocol.AgentInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if caps == nil {
+		caps = []string{}
+	}
+	info := &protocol.AgentInfo{
+		Name:         name,
+		Capabilities: caps,
+		RegisteredAt: time.Now(),
+		Online:       true,
+	}
+	s.agents[name] = info
+	return info
+}
+
+func (s *Store) UnregisterAgent(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.agents, name)
+}
+
+func (s *Store) GetAgents() []*protocol.AgentInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*protocol.AgentInfo, 0, len(s.agents))
+	for _, a := range s.agents {
+		cp := *a
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func (s *Store) IsApproved(username string) bool {

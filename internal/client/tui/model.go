@@ -108,6 +108,16 @@ var (
 	medPriSt  = lipgloss.NewStyle().Foreground(cGreen)
 	lowPriSt  = lipgloss.NewStyle().Foreground(cMuted)
 
+	cCyan      = lipgloss.Color("#00BCD4")
+	cCyanDim   = lipgloss.Color("#80DEEA")
+	agentNameSt = lipgloss.NewStyle().Foreground(cCyan).Bold(true)
+	agentDmSt   = lipgloss.NewStyle().Foreground(cCyanDim).Italic(true)
+	resultBoxSt = lipgloss.NewStyle().
+			BorderLeft(true).
+			BorderForeground(cCyan).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("#E0F7FA"))
+
 	labelSt = lipgloss.NewStyle().
 		Background(lipgloss.Color("#333333")).
 		Foreground(cMuted).
@@ -162,6 +172,7 @@ type Model struct {
 	tasks    []*protocol.Task
 	messages []*protocol.ChatMessage
 	members  []*protocol.Member
+	agents   []*protocol.AgentInfo
 
 	// chat state
 	unreadChat int // increments when not on scrChat
@@ -236,6 +247,7 @@ func New(
 		tasks:      []*protocol.Task{},
 		messages:   []*protocol.ChatMessage{},
 		members:    []*protocol.Member{},
+		agents:     []*protocol.AgentInfo{},
 		connected:  true,
 		ghClient:   ghClient,
 	}
@@ -852,8 +864,33 @@ func (m Model) renderChat() string {
 			continue
 		}
 		ts := timeSt.Render(msg.Timestamp.Format("15:04"))
+
+		// Structured agent result — render as a bordered block.
+		if msg.IsAgent && msg.Kind == "result" {
+			title := msg.Meta
+			if title == "" {
+				title = "Result"
+			}
+			header := agentNameSt.Render("["+msg.From+"]") + "  " + mutedSt.Render(title) + "  " + ts
+			body := resultBoxSt.Render(msg.Content)
+			sb.WriteString("  " + header + "\n  " + body + "\n\n")
+			continue
+		}
+
+		// Direct message — render with private indicator.
+		if msg.IsAgent && msg.Kind == "dm" {
+			recipient := msg.Meta
+			arrow := agentDmSt.Render("→ " + recipient)
+			label := agentNameSt.Render(msg.From+":") + " " + arrow
+			content := mutedSt.Render(msg.Content)
+			sb.WriteString(fmt.Sprintf("  %s  %s  %s\n", ts, label, content))
+			continue
+		}
+
 		var nameSt lipgloss.Style
 		switch {
+		case msg.IsAgent:
+			nameSt = agentNameSt
 		case msg.From == m.username:
 			nameSt = selfNameSt
 		case msg.From == "wert":
@@ -1048,15 +1085,26 @@ func (m Model) renderTaskRow(t *protocol.Task, cw int) string {
 			sb.WriteString(indent + mutedSt.Render(truncate(t.Description, descW)) + "\n")
 		}
 	}
-	var meta []string
+	var metaPlain []string
 	if t.DueDate != "" {
-		meta = append(meta, "due: "+t.DueDate)
+		metaPlain = append(metaPlain, "due: "+t.DueDate)
 	}
 	if t.UpdatedBy != "" && t.UpdatedBy != t.Assignee {
-		meta = append(meta, "by: "+t.UpdatedBy)
+		metaPlain = append(metaPlain, "by: "+t.UpdatedBy)
 	}
-	if len(meta) > 0 {
-		sb.WriteString(indent + mutedSt.Render(strings.Join(meta, "   ")) + "\n")
+	hasMeta := len(metaPlain) > 0 || t.ClaimedBy != ""
+	if hasMeta {
+		line := indent
+		if len(metaPlain) > 0 {
+			line += mutedSt.Render(strings.Join(metaPlain, "   "))
+		}
+		if t.ClaimedBy != "" {
+			if len(metaPlain) > 0 {
+				line += mutedSt.Render("   ")
+			}
+			line += agentNameSt.Render("claimed: " + t.ClaimedBy)
+		}
+		sb.WriteString(line + "\n")
 	}
 
 	sb.WriteString("\n")
@@ -1525,6 +1573,26 @@ func (m Model) renderMembers() string {
 		))
 		sb.WriteString("\n")
 	}
+
+	// Agents section.
+	if len(m.agents) > 0 {
+		sep := mutedSt.Render("  " + strings.Repeat("─", 40))
+		sb.WriteString(sep + "\n")
+		sb.WriteString("  " + sectionTitleSt.Render("AI Agents") + "\n\n")
+		for _, a := range m.agents {
+			caps := mutedSt.Render("no capabilities listed")
+			if len(a.Capabilities) > 0 {
+				caps = mutedSt.Render(strings.Join(a.Capabilities, ", "))
+			}
+			sb.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+				agentNameSt.Render("["+a.Name+"]"),
+				lipgloss.NewStyle().Foreground(cGreen).Render("registered"),
+				caps,
+			))
+		}
+		sb.WriteString("\n")
+	}
+
 	return sb.String()
 }
 
@@ -2060,6 +2128,104 @@ func (m Model) applyEnvelope(env protocol.Envelope) Model {
 			return m
 		}
 		m.removePendingJoin(p.Username)
+
+	case protocol.MsgTaskClaim:
+		var p protocol.TaskClaimPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		for _, t := range m.tasks {
+			if t.ID == p.TaskID {
+				t.ClaimedBy = p.ClaimedBy
+				break
+			}
+		}
+
+	case protocol.MsgTaskUnclaim:
+		var p protocol.TaskClaimPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		for _, t := range m.tasks {
+			if t.ID == p.TaskID {
+				t.ClaimedBy = ""
+				break
+			}
+		}
+
+	case protocol.MsgAgentResult:
+		var p protocol.AgentResultPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		cp := protocol.ChatMessage{
+			ID:        p.Agent + "-result",
+			From:      p.Agent,
+			Content:   p.Content,
+			Timestamp: p.Timestamp,
+			IsAgent:   true,
+			Kind:      "result",
+			Meta:      p.Title,
+		}
+		m.messages = append(m.messages, &cp)
+		if m.screen != scrChat {
+			m.unreadChat++
+			m.statusMsg = fmt.Sprintf("* result from %s: %s", p.Agent, p.Title)
+		}
+
+	case protocol.MsgDirectMsg:
+		var p protocol.DirectMsgPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		// Show DM only if we are sender or recipient.
+		if p.From != m.username && p.To != m.username {
+			return m
+		}
+		cp := protocol.ChatMessage{
+			ID:        p.ID,
+			From:      p.From,
+			Content:   p.Content,
+			Timestamp: p.Timestamp,
+			IsAgent:   true,
+			Kind:      "dm",
+			Meta:      p.To,
+		}
+		m.messages = append(m.messages, &cp)
+		if m.screen != scrChat {
+			m.unreadChat++
+			m.statusMsg = fmt.Sprintf("* DM from %s", p.From)
+		}
+
+	case protocol.MsgAgentOnline:
+		var p protocol.AgentOnlinePayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return m
+		}
+		if p.Online {
+			found := false
+			for _, a := range m.agents {
+				if a.Name == p.Agent.Name {
+					*a = p.Agent
+					found = true
+					break
+				}
+			}
+			if !found {
+				cp := p.Agent
+				m.agents = append(m.agents, &cp)
+			}
+			m.statusMsg = fmt.Sprintf("* agent %s connected", p.Agent.Name)
+		} else {
+			out := m.agents[:0]
+			for _, a := range m.agents {
+				if a.Name != p.Agent.Name {
+					out = append(out, a)
+				}
+			}
+			m.agents = out
+			m.statusMsg = fmt.Sprintf("* agent %s disconnected", p.Agent.Name)
+		}
 	}
 	return m
 }

@@ -19,10 +19,17 @@ const (
 	MsgError       MessageType = "error"
 
 	// join approval flow
-	MsgJoinRequest MessageType = "join_request" // server → admin: someone wants to join
-	MsgJoinApprove MessageType = "join_approve" // admin → server: allow pending user
-	MsgJoinReject  MessageType = "join_reject"  // admin → server: deny pending user
-	MsgJoinPending MessageType = "join_pending" // server → pending client: waiting for approval
+	MsgJoinRequest MessageType = "join_request"
+	MsgJoinApprove MessageType = "join_approve"
+	MsgJoinReject  MessageType = "join_reject"
+	MsgJoinPending MessageType = "join_pending"
+
+	// agent communication
+	MsgTaskClaim   MessageType = "task_claim"    // task claimed by an agent
+	MsgTaskUnclaim MessageType = "task_unclaim"  // task unclaimed
+	MsgAgentResult MessageType = "agent_result"  // structured AI output
+	MsgDirectMsg   MessageType = "direct_message" // private agent-to-agent or agent-to-human
+	MsgAgentOnline MessageType = "agent_online"  // agent registered / went offline
 )
 
 type TaskStatus string
@@ -41,10 +48,11 @@ type Task struct {
 	Assignee    string     `json:"assignee"`
 	Status      TaskStatus `json:"status"`
 	Priority    string     `json:"priority"` // low | medium | high
-	DueDate     string     `json:"due_date,omitempty"` // "2006-01-02" format, optional
+	DueDate     string     `json:"due_date,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	UpdatedBy   string     `json:"updated_by"`
+	ClaimedBy   string     `json:"claimed_by,omitempty"` // agent that claimed this task
 }
 
 type Member struct {
@@ -59,6 +67,17 @@ type ChatMessage struct {
 	From      string    `json:"from"`
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
+	IsAgent   bool      `json:"is_agent,omitempty"`
+	Kind      string    `json:"kind,omitempty"` // "" | "dm" | "result"
+	Meta      string    `json:"meta,omitempty"` // dm: recipient name; result: title
+}
+
+// AgentInfo describes a registered AI agent.
+type AgentInfo struct {
+	Name         string    `json:"name"`
+	Capabilities []string  `json:"capabilities"`
+	RegisteredAt time.Time `json:"registered_at"`
+	Online       bool      `json:"online"`
 }
 
 // Envelope wraps every WebSocket message.
@@ -126,4 +145,31 @@ type JoinApprovePayload struct {
 
 type JoinRejectPayload struct {
 	Username string `json:"username"`
+}
+
+type TaskClaimPayload struct {
+	TaskID    string `json:"task_id"`
+	ClaimedBy string `json:"claimed_by"`
+}
+
+type AgentResultPayload struct {
+	Agent     string    `json:"agent"`
+	TaskID    string    `json:"task_id,omitempty"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+type DirectMsgPayload struct {
+	ID        string    `json:"id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+	IsAgent   bool      `json:"is_agent,omitempty"`
+}
+
+type AgentOnlinePayload struct {
+	Agent  AgentInfo `json:"agent"`
+	Online bool      `json:"online"`
 }

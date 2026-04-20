@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"wert/internal/protocol"
 )
@@ -31,6 +33,8 @@ type Hub struct {
 	adminSecret string // internal secret that grants admin role to the serve user
 	pendingMu   sync.Mutex
 	pending     map[string]*client // username → client waiting for approval
+	watchMu     sync.RWMutex
+	watchers    map[chan []byte]struct{} // SSE event watchers
 }
 
 func NewHub(store *Store, joinToken, adminSecret string) *Hub {
@@ -43,6 +47,7 @@ func NewHub(store *Store, joinToken, adminSecret string) *Hub {
 		joinToken:   joinToken,
 		adminSecret: adminSecret,
 		pending:     make(map[string]*client),
+		watchers:    make(map[chan []byte]struct{}),
 	}
 }
 
@@ -78,13 +83,55 @@ func (h *Hub) Run() {
 				}
 			}
 			h.mu.RUnlock()
+			h.broadcastToWatchers(data)
 		}
 	}
 }
 
-// Broadcast sends bytes to every connected client.
+// Broadcast sends bytes to every connected client and SSE watchers.
 func (h *Hub) Broadcast(data []byte) {
 	h.broadcast <- data
+}
+
+// AddSSEWatcher registers a channel to receive every broadcast event.
+func (h *Hub) AddSSEWatcher(ch chan []byte) {
+	h.watchMu.Lock()
+	h.watchers[ch] = struct{}{}
+	h.watchMu.Unlock()
+}
+
+// RemoveSSEWatcher unregisters a previously added watcher.
+func (h *Hub) RemoveSSEWatcher(ch chan []byte) {
+	h.watchMu.Lock()
+	delete(h.watchers, ch)
+	h.watchMu.Unlock()
+}
+
+func (h *Hub) broadcastToWatchers(data []byte) {
+	h.watchMu.RLock()
+	defer h.watchMu.RUnlock()
+	for ch := range h.watchers {
+		select {
+		case ch <- data:
+		default: // slow watcher — skip, don't block
+		}
+	}
+}
+
+// sendDirect delivers data to a specific connected user by username.
+func (h *Hub) sendDirect(to string, data []byte) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		if c.registered && c.username == to {
+			select {
+			case c.send <- data:
+				return true
+			default:
+			}
+		}
+	}
+	return false
 }
 
 // OnlineUsernames returns usernames of currently connected clients.
@@ -309,6 +356,88 @@ func (h *Hub) handleEnvelope(c *client, env protocol.Envelope) {
 			if err == nil {
 				h.Broadcast(data)
 			}
+		}
+
+	case protocol.MsgTaskClaim:
+		if !c.registered {
+			return
+		}
+		var p protocol.TaskClaimPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return
+		}
+		task, ok := h.store.ClaimTask(p.TaskID, c.username)
+		if !ok {
+			h.sendError(c, "task not found or already claimed by another agent")
+			return
+		}
+		data, err := protocol.NewEnvelope(protocol.MsgTaskClaim, protocol.TaskClaimPayload{
+			TaskID:    task.ID,
+			ClaimedBy: task.ClaimedBy,
+		})
+		if err == nil {
+			h.Broadcast(data)
+		}
+
+	case protocol.MsgTaskUnclaim:
+		if !c.registered {
+			return
+		}
+		var p protocol.TaskClaimPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return
+		}
+		task, ok := h.store.UnclaimTask(p.TaskID, c.username)
+		if !ok {
+			h.sendError(c, "task not found or not claimed by you")
+			return
+		}
+		data, err := protocol.NewEnvelope(protocol.MsgTaskUnclaim, protocol.TaskClaimPayload{
+			TaskID:    task.ID,
+			ClaimedBy: "",
+		})
+		if err == nil {
+			h.Broadcast(data)
+		}
+
+	case protocol.MsgAgentResult:
+		if !c.registered {
+			return
+		}
+		var p protocol.AgentResultPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return
+		}
+		p.Agent = c.username
+		p.Timestamp = time.Now()
+		h.store.AddAgentMessage(c.username, p.Content, "result", p.Title)
+		data, err := protocol.NewEnvelope(protocol.MsgAgentResult, p)
+		if err == nil {
+			h.Broadcast(data)
+		}
+
+	case protocol.MsgDirectMsg:
+		if !c.registered {
+			return
+		}
+		var p protocol.DirectMsgPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return
+		}
+		p.From = c.username
+		p.IsAgent = true
+		p.Timestamp = time.Now()
+		p.ID = uuid.New().String()
+		h.store.AddAgentMessage(c.username, p.Content, "dm", p.To)
+		data, err := protocol.NewEnvelope(protocol.MsgDirectMsg, p)
+		if err != nil {
+			return
+		}
+		// Deliver only to recipient and echo to sender.
+		h.sendDirect(p.To, data)
+		select {
+		case c.send <- data:
+		default:
 		}
 	}
 }

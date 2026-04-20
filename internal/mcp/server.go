@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,12 +18,14 @@ import (
 
 type WertMCP struct {
 	serverURL string
+	agentName string
 	http      *http.Client
 }
 
-func New(serverURL string) *WertMCP {
+func New(serverURL, agentName string) *WertMCP {
 	return &WertMCP{
 		serverURL: strings.TrimRight(serverURL, "/"),
+		agentName: agentName,
 		http:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -36,6 +39,7 @@ type task struct {
 	Status      string    `json:"status"`
 	Priority    string    `json:"priority"`
 	DueDate     string    `json:"due_date"`
+	ClaimedBy   string    `json:"claimed_by,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	UpdatedBy   string    `json:"updated_by"`
@@ -48,6 +52,13 @@ type member struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
+type agentInfo struct {
+	Name         string    `json:"name"`
+	Capabilities []string  `json:"capabilities"`
+	RegisteredAt time.Time `json:"registered_at"`
+	Online       bool      `json:"online"`
+}
+
 func (t task) shortID() string {
 	if len(t.ID) >= 8 {
 		return t.ID[:8]
@@ -55,7 +66,19 @@ func (t task) shortID() string {
 	return t.ID
 }
 
+func (w *WertMCP) agentID() string {
+	if w.agentName != "" {
+		return w.agentName
+	}
+	return "claude"
+}
+
 func (w *WertMCP) Serve() error {
+	// Auto-register agent capabilities if name is set.
+	if w.agentName != "" {
+		_ = w.registerSelf([]string{"task_management", "messaging", "code_review"})
+	}
+
 	s := server.NewMCPServer(
 		"wert",
 		"2.0.0",
@@ -63,7 +86,6 @@ func (w *WertMCP) Serve() error {
 	)
 
 	// ── team_context ──────────────────────────────────────────────────────────
-	// Primary tool for Claude Code: get everything needed to understand team state
 	s.AddTool(
 		mcp.NewTool("team_context",
 			mcp.WithDescription(`Get full team context in one call: online members, task summary by person, and recent activity.
@@ -92,7 +114,6 @@ Returns structured markdown suitable for reasoning about what to do next.`),
 			var sb strings.Builder
 			sb.WriteString("# Team Context\n\n")
 
-			// Team members
 			sb.WriteString("## Team Members\n\n")
 			for _, m := range members {
 				status := "offline"
@@ -103,7 +124,6 @@ Returns structured markdown suitable for reasoning about what to do next.`),
 			}
 			sb.WriteString("\n")
 
-			// Task summary
 			counts := map[string]int{"todo": 0, "in_progress": 0, "done": 0, "blocked": 0}
 			for _, t := range tasks {
 				counts[t.Status]++
@@ -112,7 +132,6 @@ Returns structured markdown suitable for reasoning about what to do next.`),
 			sb.WriteString(fmt.Sprintf("- In Progress: %d\n- Todo: %d\n- Blocked: %d\n- Done: %d\n\n",
 				counts["in_progress"], counts["todo"], counts["blocked"], counts["done"]))
 
-			// Per-person breakdown
 			byPerson := map[string][]task{}
 			for _, t := range tasks {
 				byPerson[t.Assignee] = append(byPerson[t.Assignee], t)
@@ -138,8 +157,12 @@ Returns structured markdown suitable for reasoning about what to do next.`),
 					if t.DueDate != "" {
 						due = fmt.Sprintf(" — due %s", t.DueDate)
 					}
-					sb.WriteString(fmt.Sprintf("- [%s] `%s` %s (%s)%s\n",
-						strings.ToUpper(t.Status), t.shortID(), t.Title, t.Priority, due))
+					claimed := ""
+					if t.ClaimedBy != "" {
+						claimed = fmt.Sprintf(" [claimed by %s]", t.ClaimedBy)
+					}
+					sb.WriteString(fmt.Sprintf("- [%s] `%s` %s (%s)%s%s\n",
+						strings.ToUpper(t.Status), t.shortID(), t.Title, t.Priority, due, claimed))
 				}
 				sb.WriteString("\n")
 			}
@@ -151,7 +174,7 @@ Returns structured markdown suitable for reasoning about what to do next.`),
 	// ── list_tasks ────────────────────────────────────────────────────────────
 	s.AddTool(
 		mcp.NewTool("list_tasks",
-			mcp.WithDescription(`List tasks with optional filtering. Returns task IDs, titles, status, assignee, priority, and due dates.
+			mcp.WithDescription(`List tasks with optional filtering. Returns task IDs, titles, status, assignee, priority, due dates, and claimed_by.
 Filter by assignee to see one person's workload. Filter by status to find blocked or in-progress tasks.
 Task IDs are UUIDs — use the first 8 characters as a short ID for other tools.`),
 			mcp.WithString("assignee", mcp.Description("Filter by exact username")),
@@ -183,12 +206,16 @@ Task IDs are UUIDs — use the first 8 characters as a short ID for other tools.
 				if t.DueDate != "" {
 					due = fmt.Sprintf("  due:%s", t.DueDate)
 				}
+				claimed := ""
+				if t.ClaimedBy != "" {
+					claimed = fmt.Sprintf("  [claimed:%s]", t.ClaimedBy)
+				}
 				desc := ""
 				if t.Description != "" {
 					desc = fmt.Sprintf("\n    %s", t.Description)
 				}
-				sb.WriteString(fmt.Sprintf("- `%s`  [%s]  %s  →%s  @%s  (%s)%s%s\n",
-					t.shortID(), strings.ToUpper(t.Status), t.Title, t.Priority, t.Assignee, t.ID, due, desc))
+				sb.WriteString(fmt.Sprintf("- `%s`  [%s]  %s  →%s  @%s  (%s)%s%s%s\n",
+					t.shortID(), strings.ToUpper(t.Status), t.Title, t.Priority, t.Assignee, t.ID, due, claimed, desc))
 			}
 			return mcp.NewToolResultText(sb.String()), nil
 		},
@@ -198,7 +225,7 @@ Task IDs are UUIDs — use the first 8 characters as a short ID for other tools.
 	s.AddTool(
 		mcp.NewTool("get_task",
 			mcp.WithDescription(`Get full details of a single task by its ID prefix.
-Returns title, description, status, priority, assignee, due date, and update history.`),
+Returns title, description, status, priority, assignee, due date, claimed_by, and update history.`),
 			mcp.WithString("task_id", mcp.Required(), mcp.Description("Task ID or short 8-char prefix")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -222,6 +249,9 @@ Returns title, description, status, priority, assignee, due date, and update his
 					sb.WriteString(fmt.Sprintf("Status:      %s\n", strings.ToUpper(t.Status)))
 					sb.WriteString(fmt.Sprintf("Priority:    %s\n", t.Priority))
 					sb.WriteString(fmt.Sprintf("Assignee:    @%s\n", t.Assignee))
+					if t.ClaimedBy != "" {
+						sb.WriteString(fmt.Sprintf("Claimed by:  %s\n", t.ClaimedBy))
+					}
 					if t.DueDate != "" {
 						sb.WriteString(fmt.Sprintf("Due:         %s\n", t.DueDate))
 					}
@@ -309,6 +339,7 @@ Include due_date (YYYY-MM-DD) for deadline-sensitive work.`),
 				"description": description,
 				"priority":    priority,
 				"due_date":    dueDate,
+				"created_by":  w.agentID(),
 			}
 			body, err := w.post("/api/tasks", payload)
 			if err != nil {
@@ -347,7 +378,7 @@ The change is broadcast live to all connected terminals.`),
 			if !validStatuses[status] {
 				return nil, fmt.Errorf("invalid status %q — use: todo | in_progress | done | blocked", status)
 			}
-			payload := map[string]string{"status": status, "updated_by": "claude"}
+			payload := map[string]string{"status": status, "updated_by": w.agentID()}
 			body, err := w.put("/api/tasks/"+taskID, payload)
 			if err != nil {
 				return nil, fmt.Errorf("updating task: %w", err)
@@ -420,7 +451,7 @@ Members must have connected at least once to appear here.`),
 Use this to notify the team about task completions, blockers, or code review requests.
 The message supports @username mentions for notifications.`),
 			mcp.WithString("content", mcp.Required(), mcp.Description("Message text. Supports @username mentions.")),
-			mcp.WithString("from", mcp.Description("Sender display name (default: claude)")),
+			mcp.WithString("from", mcp.Description("Sender display name (default: agent name or claude)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			content, _ := req.Params.Arguments["content"].(string)
@@ -429,7 +460,7 @@ The message supports @username mentions for notifications.`),
 				return nil, fmt.Errorf("content is required")
 			}
 			if from == "" {
-				from = "claude"
+				from = w.agentID()
 			}
 			payload := map[string]string{"content": content, "from": from}
 			_, err := w.post("/api/messages", payload)
@@ -466,7 +497,6 @@ Use this for a quick overall status check or to generate a standup summary.`),
 			sb.WriteString("# wert Dashboard\n\n")
 			sb.WriteString(fmt.Sprintf("_Generated %s_\n\n", time.Now().Format("2006-01-02 15:04")))
 
-			// online status
 			sb.WriteString("## Team\n\n")
 			for _, m := range members {
 				dot := "○"
@@ -477,7 +507,6 @@ Use this for a quick overall status check or to generate a standup summary.`),
 			}
 			sb.WriteString("\n")
 
-			// counts
 			counts := map[string]int{}
 			for _, t := range tasks {
 				counts[t.Status]++
@@ -489,7 +518,6 @@ Use this for a quick overall status check or to generate a standup summary.`),
 			sb.WriteString(fmt.Sprintf("| Blocked | %d |\n", counts["blocked"]))
 			sb.WriteString(fmt.Sprintf("| Done | %d |\n\n", counts["done"]))
 
-			// per-person tasks
 			byMember := map[string][]task{}
 			for _, t := range tasks {
 				byMember[t.Assignee] = append(byMember[t.Assignee], t)
@@ -504,11 +532,11 @@ Use this for a quick overall status check or to generate a standup summary.`),
 			for _, name := range names {
 				ts := byMember[name]
 				sb.WriteString(fmt.Sprintf("### @%s\n\n", name))
-				sb.WriteString("| ID | Status | Title | Priority | Due |\n")
-				sb.WriteString("|-----|--------|-------|----------|-----|\n")
+				sb.WriteString("| ID | Status | Title | Priority | Due | Claimed |\n")
+				sb.WriteString("|-----|--------|-------|----------|-----|--------|\n")
 				for _, t := range ts {
-					sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s |\n",
-						t.shortID(), t.Status, t.Title, t.Priority, t.DueDate))
+					sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s |\n",
+						t.shortID(), t.Status, t.Title, t.Priority, t.DueDate, t.ClaimedBy))
 				}
 				sb.WriteString("\n")
 			}
@@ -516,7 +544,274 @@ Use this for a quick overall status check or to generate a standup summary.`),
 		},
 	)
 
+	// ── claim_task ────────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("claim_task",
+			mcp.WithDescription(`Claim a task so other agents know you're working on it.
+Prevents two agents from working on the same task simultaneously.
+Returns an error if the task is already claimed by a different agent.
+Always unclaim the task when done or if you're abandoning it.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char task ID prefix")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			if taskID == "" {
+				return nil, fmt.Errorf("task_id is required")
+			}
+			payload := map[string]string{"agent": w.agentID()}
+			body, err := w.post("/api/tasks/"+taskID+"/claim", payload)
+			if err != nil {
+				return nil, fmt.Errorf("claiming task: %w", err)
+			}
+			var t task
+			if err := json.Unmarshal(body, &t); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Task `%s` claimed.", taskID)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Task `%s` claimed by %s: %s", t.shortID(), t.ClaimedBy, t.Title)), nil
+		},
+	)
+
+	// ── unclaim_task ──────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("unclaim_task",
+			mcp.WithDescription(`Release a task claim so other agents can pick it up.
+Call this when you finish a task, abandon it, or hand off to another agent.
+You can only unclaim tasks that you previously claimed.`),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("Short 8-char task ID prefix")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			if taskID == "" {
+				return nil, fmt.Errorf("task_id is required")
+			}
+			payload := map[string]string{"agent": w.agentID()}
+			body, err := w.post("/api/tasks/"+taskID+"/unclaim", payload)
+			if err != nil {
+				return nil, fmt.Errorf("unclaiming task: %w", err)
+			}
+			var t task
+			if err := json.Unmarshal(body, &t); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Task `%s` unclaimed.", taskID)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Task `%s` unclaimed: %s", t.shortID(), t.Title)), nil
+		},
+	)
+
+	// ── wait_for_change ───────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("wait_for_change",
+			mcp.WithDescription(`Block until a team event occurs, then return it.
+Use this to efficiently react to changes without polling: wait for a task update, new message, member joining, etc.
+Useful for agent-to-agent coordination: one agent posts a result, another is woken up to consume it.
+Times out after the specified seconds (default 30). Returns the event envelope on success.`),
+			mcp.WithString("filter", mcp.Description("Comma-separated event types to wait for, e.g. 'task_update,agent_result'. Empty = any event.")),
+			mcp.WithNumber("timeout", mcp.Description("Seconds to wait before timing out (default 30, max 120)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			filter, _ := req.Params.Arguments["filter"].(string)
+			timeoutSec := 30.0
+			if t, ok := req.Params.Arguments["timeout"].(float64); ok && t > 0 {
+				timeoutSec = t
+				if timeoutSec > 120 {
+					timeoutSec = 120
+				}
+			}
+
+			url := w.serverURL + "/api/watch"
+			if filter != "" {
+				url += "?filter=" + filter
+			}
+
+			// Use a client with a longer timeout for streaming.
+			streamClient := &http.Client{Timeout: time.Duration(timeoutSec+5) * time.Second}
+			reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+			defer cancel()
+
+			httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+			if err != nil {
+				return nil, fmt.Errorf("building request: %w", err)
+			}
+			httpReq.Header.Set("Accept", "text/event-stream")
+
+			resp, err := streamClient.Do(httpReq)
+			if err != nil {
+				if reqCtx.Err() != nil {
+					return mcp.NewToolResultText("timeout: no matching event within the wait period"), nil
+				}
+				return nil, fmt.Errorf("connecting to watch stream: %w", err)
+			}
+			defer resp.Body.Close()
+
+			scanner := bufio.NewScanner(resp.Body)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				data := strings.TrimPrefix(line, "data: ")
+				// Pretty-print the event.
+				var pretty map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &pretty); err != nil {
+					return mcp.NewToolResultText("event received: " + data), nil
+				}
+				out, _ := json.MarshalIndent(pretty, "", "  ")
+				return mcp.NewToolResultText("event received:\n\n```json\n" + string(out) + "\n```"), nil
+			}
+			return mcp.NewToolResultText("timeout: no matching event within the wait period"), nil
+		},
+	)
+
+	// ── send_direct_message ───────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("send_direct_message",
+			mcp.WithDescription(`Send a private message to a specific agent or team member.
+The message is delivered only to the recipient — not broadcast to the whole team.
+Use this for agent-to-agent task handoffs, private instructions, or sensitive feedback.`),
+			mcp.WithString("to", mcp.Required(), mcp.Description("Username or agent name of the recipient")),
+			mcp.WithString("content", mcp.Required(), mcp.Description("Message content")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			to, _ := req.Params.Arguments["to"].(string)
+			content, _ := req.Params.Arguments["content"].(string)
+			if to == "" || content == "" {
+				return nil, fmt.Errorf("to and content are required")
+			}
+			payload := map[string]string{
+				"from":    w.agentID(),
+				"to":      to,
+				"content": content,
+			}
+			_, err := w.post("/api/direct", payload)
+			if err != nil {
+				return nil, fmt.Errorf("sending direct message: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Direct message sent to %s.", to)), nil
+		},
+	)
+
+	// ── post_result ───────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("post_result",
+			mcp.WithDescription(`Post a structured AI result to the team chat.
+Results appear in a distinct format that separates agent output from regular chat.
+Use this to publish analysis, summaries, code reviews, or any structured output.
+Optionally associate the result with a specific task ID.`),
+			mcp.WithString("content", mcp.Required(), mcp.Description("The result content (markdown supported)")),
+			mcp.WithString("title", mcp.Description("Short title for the result (default: 'Result')")),
+			mcp.WithString("task_id", mcp.Description("Associate this result with a task short ID")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			content, _ := req.Params.Arguments["content"].(string)
+			title, _ := req.Params.Arguments["title"].(string)
+			taskID, _ := req.Params.Arguments["task_id"].(string)
+			if content == "" {
+				return nil, fmt.Errorf("content is required")
+			}
+			if title == "" {
+				title = "Result"
+			}
+			payload := map[string]string{
+				"agent":   w.agentID(),
+				"task_id": taskID,
+				"title":   title,
+				"content": content,
+			}
+			_, err := w.post("/api/results", payload)
+			if err != nil {
+				return nil, fmt.Errorf("posting result: %w", err)
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Result posted: %q (%d chars)", title, len(content))), nil
+		},
+	)
+
+	// ── register_capabilities ─────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("register_capabilities",
+			mcp.WithDescription(`Register or update this agent's capabilities in the team registry.
+Other agents can discover you via list_agents and route work based on capabilities.
+Common capabilities: code_review, testing, documentation, deployment, analysis.
+Registration is lost when the MCP server process exits unless auto-registered on startup.`),
+			mcp.WithString("capabilities", mcp.Required(), mcp.Description("Comma-separated capability tags, e.g. 'code_review,testing,analysis'")),
+			mcp.WithString("name", mcp.Description("Override agent name (default: agent name from --agent-name flag)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			capsStr, _ := req.Params.Arguments["capabilities"].(string)
+			if capsStr == "" {
+				return nil, fmt.Errorf("capabilities is required")
+			}
+			name, _ := req.Params.Arguments["name"].(string)
+			if name == "" {
+				name = w.agentID()
+			}
+			var caps []string
+			for _, c := range strings.Split(capsStr, ",") {
+				c = strings.TrimSpace(c)
+				if c != "" {
+					caps = append(caps, c)
+				}
+			}
+			payload := map[string]interface{}{
+				"name":         name,
+				"capabilities": caps,
+			}
+			body, err := w.post("/api/agents", payload)
+			if err != nil {
+				return nil, fmt.Errorf("registering capabilities: %w", err)
+			}
+			var info agentInfo
+			if err := json.Unmarshal(body, &info); err != nil {
+				return mcp.NewToolResultText(fmt.Sprintf("Agent %q registered.", name)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Agent %q registered with capabilities: %s",
+				info.Name, strings.Join(info.Capabilities, ", "))), nil
+		},
+	)
+
+	// ── list_agents ───────────────────────────────────────────────────────────
+	s.AddTool(
+		mcp.NewTool("list_agents",
+			mcp.WithDescription(`List all registered AI agents and their capabilities.
+Use this to discover what other agents are available and what they can do.
+Useful before sending a direct message or delegating a subtask.
+Agents are registered at startup and unregistered when they disconnect.`),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			body, err := w.get("/api/agents")
+			if err != nil {
+				return nil, fmt.Errorf("fetching agents: %w", err)
+			}
+			var agents []agentInfo
+			if err := json.Unmarshal(body, &agents); err != nil {
+				return nil, fmt.Errorf("parsing agents: %w", err)
+			}
+			if len(agents) == 0 {
+				return mcp.NewToolResultText("No agents currently registered."), nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%d registered agent(s):\n\n", len(agents)))
+			for _, a := range agents {
+				caps := "none"
+				if len(a.Capabilities) > 0 {
+					caps = strings.Join(a.Capabilities, ", ")
+				}
+				sb.WriteString(fmt.Sprintf("- **%s** — capabilities: %s  (registered %s)\n",
+					a.Name, caps, a.RegisteredAt.Format("15:04")))
+			}
+			return mcp.NewToolResultText(sb.String()), nil
+		},
+	)
+
 	return server.ServeStdio(s)
+}
+
+// registerSelf posts this agent to the capability registry on startup.
+func (w *WertMCP) registerSelf(caps []string) error {
+	payload := map[string]interface{}{
+		"name":         w.agentName,
+		"capabilities": caps,
+	}
+	_, err := w.post("/api/agents", payload)
+	return err
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
